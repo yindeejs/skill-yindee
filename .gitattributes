@@ -1,0 +1,7 @@
+# Normalise to LF in the repository. Yindee runs on Linux, macOS and Windows,
+# and several tests compare command output line by line — mixed line endings
+# turn that into a platform-dependent failure.
+* text=auto eol=lf
+
+# Keep the CLI executable bit meaningful on POSIX checkouts.
+scripts/yindee.mjs text eol=lf

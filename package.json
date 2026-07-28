@@ -1,0 +1,45 @@
+{
+  "name": "yindee",
+  "version": "1.0.0",
+  "description": "Token-efficient development harness for AI coding agents. Less context, better context.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/yindeejs/skill-yindee#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yindeejs/skill-yindee.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yindeejs/skill-yindee/issues"
+  },
+  "keywords": [
+    "ai",
+    "claude-code",
+    "agent-skills",
+    "coding-agents",
+    "developer-tools",
+    "context-engineering",
+    "token-optimization",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "yindee": "scripts/yindee.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "lint": "node --check scripts/yindee.mjs"
+  },
+  "files": [
+    "scripts",
+    "rules",
+    "references",
+    "templates",
+    "SKILL.md",
+    "README.md",
+    "LICENSE"
+  ]
+}

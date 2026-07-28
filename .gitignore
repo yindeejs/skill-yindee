@@ -1,0 +1,19 @@
+# Yindee's own generated state: project map cache, last verify results,
+# benchmark telemetry and run history. All machine-local, never committed.
+.claude/yindee/
+
+# Dependencies (Yindee itself has none; this is for contributors' tooling)
+node_modules/
+
+# Environment and credentials
+.env
+.env.*
+*.pem
+*.key
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
