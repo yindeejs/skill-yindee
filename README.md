@@ -69,8 +69,13 @@ scripts/
   lib/
     detect.mjs        stacks, package manager, workspace layout, commands, CI   (deterministic)
     map.mjs           builds + caches the project map behind a fingerprint
+    init.mjs          project initialization + the fingerprint that keeps it cheap
     areas.mjs         path -> area (frontend/backend/database/security/infra/test) + sensitivity
     context.mjs       task -> packages, rules, files to open
+    candidates.mjs    ranks files for a task; shared with reference repositories
+    budget.mjs        how much source a lookup may return; ranks and splits the rest
+    explore.mjs       exploration policy + broad-task decomposition
+    reference.mjs     a second repository, mapped and compared without loading it
     impact.mjs        changed files -> packages -> dependents -> risk tier -> verify plan
     verify.mjs        runs the plan, reports failing evidence only
     review.mjs        bounded diff + path-scoped checklist + failure evidence
@@ -84,16 +89,26 @@ references/           git-native team workflow
 templates/            lean CLAUDE.md router for `install`
 ```
 
-The map is cached in `.claude/yindee/` behind a fingerprint of the repo's manifest files plus a
-fingerprint of the harness itself, so it rebuilds when the project changes or when Yindee is upgraded
-— and at no other time.
+The map is cached in `.claude/yindee/` behind a fingerprint of the repo's manifest files (and the
+workspace directories that hold them, so a newly added package invalidates it) plus a fingerprint of
+the harness itself. It rebuilds when the project changes or when Yindee is upgraded — and at no
+other time. `init` records that fingerprint, which is why every command can initialize the project
+implicitly and a second run costs one stat sweep:
+
+```
+$ yindee init
+Project already initialized.
+Map cache valid.
+No rebuild required.
+```
 
 ## Features
 
 | Command | Answers |
 | --- | --- |
+| `init` | What is this project — stack, packages, commands, CI, git. Runs itself on first use. |
 | `map` | What is this repo — packages, dependency graph, commands, CI. Cached. |
-| `context "<task>"` | Which packages, rules and files does *this task* need. |
+| `context "<task>"` | Which packages, rules and files does *this task* need — and how much of them. |
 | `impact` | What changed, what depends on it, how risky, what to run. |
 | `verify` | Run that plan. Reports failures only, truncated to the evidence. |
 | `review` | Bounded diff + path-scoped checklist + failure evidence. |
@@ -104,6 +119,59 @@ fingerprint of the harness itself, so it rebuilds when the project changes or wh
 
 Plus: risk tiering (`docs` / `standard` / `broad` / `critical`) that decides verification depth from
 the paths that changed, per-repo overrides, and on-demand rule files.
+
+### Exploration control
+
+Yindee owns repository discovery, so an agent never has to go looking for it. `context` prints an
+`explore` level — `none`, `targeted` or `semantic` — with a scope and a one-agent-at-a-time cap.
+It never prints `broad`: a repository-wide sweep has to be justified in words first.
+
+**Task breadth does not justify repository breadth.** A task like *"modernise the entire component
+library"* comes back decomposed into ordered phases — foundations first, by dependency depth — each
+of which is its own cheap, scoped lookup:
+
+```bash
+$Y context "modernize the entire component library preserving the public API"
+# explore NONE  (yindee named 12 file(s) deterministically; broad task — decomposed, not explored)
+# phases  broad task -> 3 area(s); do one per pass, verify between:
+#   1. @kairo/tokens  packages/tokens
+#   2. @kairo/ui      packages/ui
+#   3. @kairo/docs    packages/docs
+```
+
+### Context budget
+
+Every lookup is capped before any source is opened. `context` reports candidates ranked, files
+selected, bytes and an estimated token count — and when the candidate set is too big it is **split
+into ranked batches** rather than truncated silently:
+
+```
+budget 12/34 file(s) · 91204 B · ~22801 tok (estimate) · batch 1/3, 22 deferred (byte ceiling)
+       next batch: yindee context "..." --batch 2
+```
+
+Defaults are 12 files / 96 KB, overridable per repo in `.claude/yindee.json`:
+
+```json
+{ "context": { "maxFiles": 20, "maxBytes": 150000 } }
+```
+
+### Reference repositories
+
+Migrating one repo towards another does not require loading both. `--reference` maps the second
+repo deterministically (cached inside *your* repo — the reference checkout is never written to) and
+returns only the files that pair with your own selection:
+
+```bash
+$Y context "align our tokens with the reference design system" --reference ../nongmuek-ref
+# ref    nongmuek-ref  /path/to/nongmuek-ref  [node, 1 pkg]  mapped
+#        compare (reference -> here):
+#          src/tokens.ts  ->  packages/tokens/src/tokens.ts
+#          src/theme.ts   ->  packages/tokens/src/theme.ts
+#        reference-only: typography.ts
+```
+
+A missing reference degrades to a note; the main repo's context is unaffected.
 
 ## Installation
 
@@ -151,6 +219,7 @@ cd skill-yindee
 Y="node $PWD/scripts/yindee.mjs --repo /path/to/your/project"
 
 $Y doctor                                       # does it understand your stack?
+$Y init                                         # stack, packages, commands, CI — cached (optional)
 $Y map                                          # layout, packages, commands, CI
 $Y context "add refresh token rotation"         # what this task needs — read only this
 # ... make your edits ...
@@ -282,6 +351,10 @@ Source             claude-code-session-transcript (1 request)
 | Yindee context bytes, output bytes | bytes the process actually wrote to stdout |
 | command / cache-hit / verification counters | recorded by each command as it runs |
 | files changed, lines added/deleted | `git diff --numstat`, baselined against the tree at `start` |
+| init runs, cache hits, map rebuilds avoided | recorded by every command that loads the map |
+| candidates ranked, files selected, budget splits | recorded by `context` from the budget it applied |
+| exploration level, phases, reference queries | recorded by `context` from the policy it produced |
+| **subagents spawned, exploration agents** | `Task` invocations in the session transcript, or `unavailable` |
 | **actual token usage** | the agent runtime's own structured session transcript |
 
 **On token usage.** When Yindee runs inside Claude Code, exact per-request usage is read from the
@@ -298,6 +371,24 @@ real token count.
 
 Runs persist as JSON under `.claude/yindee/telemetry/runs/`, bounded to the newest 20.
 
+### The two-repo benchmark
+
+`npm run bench` builds a component library plus a reference design system in a temp directory and
+routes the task that caused the problem this policy exists for — *"modernise this UI library using
+the reference design system while preserving all public APIs"* — through the real CLI under a real
+telemetry session:
+
+```bash
+npm run bench            # human-readable
+npm run bench -- --json  # machine-readable
+```
+
+It reports what a whole-repository sweep of both repos would have to read (measured on disk — not a
+token count and not an observed agent run), against the single bounded lookup that replaces it, plus
+the per-phase execution cost and the exploration level the policy produced. Child processes run
+without a session id on purpose, so Claude token usage reports `unavailable` rather than billing the
+benchmark for the surrounding conversation.
+
 ## Token efficiency
 
 Yindee's claim is about **mechanism**, not a number:
@@ -309,6 +400,10 @@ Yindee's claim is about **mechanism**, not a number:
   apply. The rest are never read.
 - **`verify` ships evidence, not scrollback.** Output is filtered to failing lines and truncated.
 - **`review` reads the diff, not the repo**, with a per-file and total line budget.
+- **A context budget caps every lookup** before source is opened, and splits an oversized candidate
+  set into ranked batches instead of handing over all of it.
+- **Broad tasks decompose instead of exploring.** Size becomes phases, not a wider search.
+- **A second repository is compared, not loaded** — `--reference` returns paired files only.
 
 **This repository publishes no token-saving or time-saving percentages.** Savings depend entirely on
 your repo, your task and your agent, and a number measured on someone else's monorepo would tell you
@@ -389,6 +484,14 @@ target repos, so it never appears in a teammate's `git status`.
 - **Verification is only as good as the repo's commands.** Yindee runs your lint/typecheck/test; it
   does not invent checks the project does not have.
 - **Subagent token usage** is included in the session window totals, not attributed separately.
+- **The exploration policy is advisory, not enforced.** Claude Code exposes no API for blocking a
+  subagent, so Yindee states the policy, scopes it, and measures the outcome — it cannot prevent a
+  broad agent from being spawned anyway.
+- **Subagent observation depends on what the transcript records.** `benchmark` counts `Task`
+  invocations and sidechain usage when the session transcript contains them, and reports
+  `unavailable` when it does not. It never reports zero in place of "not observable".
+- **Reference pairing is by filename stem.** Two repos that name the same concept differently will
+  pair fewer files; those land in `reference-only` rather than being dropped.
 
 ## Roadmap
 
