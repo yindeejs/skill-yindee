@@ -492,6 +492,38 @@ function detectDocs(root) {
   };
 }
 
+// ------------------------------------------------------------ frameworks ---
+
+/**
+ * Declared-dependency -> framework label. Read from manifests only: a framework
+ * is "present" because the project declared it, never because a file looked
+ * like it. Order is the display order.
+ */
+const FRAMEWORKS = [
+  ['next', 'Next.js'], ['nuxt', 'Nuxt'], ['@remix-run/react', 'Remix'], ['astro', 'Astro'],
+  ['@angular/core', 'Angular'], ['vue', 'Vue'], ['svelte', 'Svelte'], ['solid-js', 'Solid'],
+  ['react-native', 'React Native'], ['expo', 'Expo'], ['electron', 'Electron'], ['react', 'React'],
+  ['@nestjs/core', 'NestJS'], ['express', 'Express'], ['fastify', 'Fastify'], ['koa', 'Koa'], ['hono', 'Hono'],
+  ['django', 'Django'], ['flask', 'Flask'], ['fastapi', 'FastAPI'], ['rails', 'Rails'], ['sinatra', 'Sinatra'],
+  ['laravel/framework', 'Laravel'], ['symfony/framework-bundle', 'Symfony'],
+  ['axum', 'axum'], ['actix-web', 'Actix'], ['rocket', 'Rocket'], ['tokio', 'Tokio'],
+  ['phoenix', 'Phoenix'], ['spring-boot-starter', 'Spring Boot'],
+  ['tailwindcss', 'Tailwind'], ['@storybook/react', 'Storybook'],
+];
+
+/** Frameworks any package declares, strongest first, deduped and capped. */
+function frameworksOf(packages) {
+  const declared = new Set(packages.flatMap((p) => p.rawDeps || []));
+  const hit = [];
+  for (const [dep, label] of FRAMEWORKS) {
+    if (declared.has(dep) || [...declared].some((d) => d === dep || d.endsWith(`/${dep}`))) hit.push(label);
+  }
+  // Next.js/Nuxt/Remix already imply their view layer; naming both is noise.
+  const implied = { 'Next.js': 'React', Remix: 'React', Nuxt: 'Vue', Expo: 'React Native' };
+  const covered = new Set(hit.map((h) => implied[h]).filter(Boolean));
+  return uniq(hit.filter((h) => !covered.has(h))).slice(0, 3);
+}
+
 // ---------------------------------------------------------------- config ---
 
 /** Per-repo override files, in precedence order. */
@@ -535,6 +567,9 @@ export function detect(root) {
     packages.push({ name: path.basename(root), path: '.', stack: 'unknown', kind: 'lib', manifest: null, deps: [], rawDeps: [], scripts: {} });
   }
 
+  // Read before `rawDeps` is filtered down to workspace-local edges below.
+  const frameworks = frameworksOf(packages);
+
   // Internal dependency edges (workspace-local only).
   const byName = new Map(packages.map((p) => [p.name, p]));
   for (const p of packages) {
@@ -565,9 +600,19 @@ export function detect(root) {
   }
   commands = { ...commands, ...(config.commands || {}) };
 
+  // Workspace container directories, e.g. `packages/*` -> `packages`. A new
+  // member adds no line to any manifest we already track, so without watching
+  // the container a freshly added package would never invalidate the cached map.
+  const workspaceDirs = uniq(
+    globs
+      .map((g) => toPosix(g).split('/').filter((s) => !s.includes('*') && s !== '.').join('/'))
+      .filter(Boolean),
+  );
+
   const manifestFiles = uniq([
     ...uniq([
       ...packages.map((p) => p.manifest).filter(Boolean),
+      ...workspaceDirs,
       'package.json', 'pnpm-workspace.yaml', 'turbo.json', 'nx.json', 'lerna.json',
       'Cargo.toml', 'go.work', 'go.mod', 'pyproject.toml', 'composer.json', 'Gemfile',
       'pom.xml', 'build.gradle', 'build.gradle.kts', 'mix.exs', 'deno.json', 'pubspec.yaml',
@@ -581,6 +626,8 @@ export function detect(root) {
 
   return {
     stacks,
+    frameworks,
+    typescript: packages.some((p) => p.typescript) || has(root, 'tsconfig.json'),
     packageManager,
     monorepo: { tool, isMonorepo: packages.length > 1, globs },
     packages,

@@ -31,7 +31,8 @@
   },
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
-    "lint": "node --check scripts/yindee.mjs"
+    "lint": "node --check scripts/yindee.mjs",
+    "bench": "node benchmarks/two-repo-modernization.mjs"
   },
   "files": [
     "scripts",

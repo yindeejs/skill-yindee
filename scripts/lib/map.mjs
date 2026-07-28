@@ -8,7 +8,7 @@ import { areasOf } from './areas.mjs';
 import { collectFiles, exists, readJson, writeJson, fingerprint, ensureLocalExclude } from './fsx.mjs';
 import { columns, uniq, sha1 } from './util.mjs';
 
-export const MAP_VERSION = 1;
+export const MAP_VERSION = 2;
 export const mapPath = (root) => path.join(root, '.claude', 'yindee', 'map.json');
 
 const LIB_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +18,7 @@ const LIB_DIR = path.dirname(fileURLToPath(import.meta.url));
  * would leave every already-cached map stale forever.
  */
 let harnessFp = null;
-function harnessFingerprint() {
+export function harnessFingerprint() {
   if (harnessFp === null) {
     const files = ['detect.mjs', 'map.mjs', 'areas.mjs', 'toml.mjs', 'impact.mjs'];
     harnessFp = sha1(`v${MAP_VERSION}|` + fingerprint(LIB_DIR, files));
@@ -82,6 +82,9 @@ export function buildMap(root) {
     fingerprint: fingerprint(root, d.manifestFiles),
     manifestFiles: d.manifestFiles,
     stacks: d.stacks,
+    // Declared, not inferred: `init` reports these and never guesses beyond them.
+    frameworks: d.frameworks,
+    typescript: d.typescript,
     packageManager: d.packageManager,
     monorepo: d.monorepo,
     packages,
@@ -141,7 +144,8 @@ export function renderMap(map, { verbose = false } = {}) {
       (g.remote ? `  ${g.host}:${g.remote}` : ''),
   );
   out.push(
-    `stack  ${map.stacks.join('+')} | pm ${map.packageManager}` +
+    `stack  ${map.stacks.join('+')}${map.typescript ? '+ts' : ''} | pm ${map.packageManager}` +
+      (map.frameworks?.length ? ` | ${map.frameworks.join(',')}` : '') +
       (map.monorepo.tool ? ` | ${map.monorepo.tool}` : '') +
       ` | ${map.packages.length} package${map.packages.length === 1 ? '' : 's'}`,
   );

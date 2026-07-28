@@ -35,11 +35,29 @@ export function renderReport(run) {
   out.push(columns(head.map(([k, v]) => [k, v]), 1));
 
   const est = run.context.estimatedYindeeContextTokens || {};
+  const ctx = run.context;
   section(out, 'Context', [
-    ['Yindee context', fmtBytes(run.context.bytes)],
+    ['Yindee context', fmtBytes(ctx.bytes)],
     ['Estimated tokens', `~${fmtCount(est.value ?? 0)} (estimate only — Yindee output, not Claude usage)`],
-    ['Files suggested', String(run.context.filesSuggested)],
+    ['Files suggested', String(ctx.filesSuggested)],
     ['Files affected', String(run.impact.filesAffected)],
+    ...(ctx.candidates !== undefined
+      ? [
+          ['Candidates ranked', String(ctx.candidates)],
+          ['Files selected', String(ctx.filesSelected ?? 0)],
+          ['Selected file bytes', fmtBytes(ctx.selectedBytes ?? 0)],
+          ['Budget splits', String(ctx.budgetHits ?? 0)],
+        ]
+      : []),
+  ]);
+
+  const init = run.init || {};
+  section(out, 'Initialization', [
+    ['Init runs', String(init.runs ?? 0)],
+    ['Automatic inits', String(init.automatic ?? 0)],
+    ['Init cache hits', String(init.cacheHits ?? 0)],
+    ['Refreshes', String(init.refreshes ?? 0)],
+    ['Map rebuilds avoided', String(run.map.rebuildsAvoided ?? run.map.cacheHits)],
   ]);
 
   section(out, 'Routing', [
@@ -47,10 +65,53 @@ export function renderReport(run) {
     ['Map runs', String(run.map.runs)],
     ['Cache hits', String(run.map.cacheHits)],
     ['Cache misses', String(run.map.cacheMisses)],
-    ['Context runs', String(run.context.runs)],
+    ['Context runs', String(ctx.runs)],
     ['Impact runs', String(run.impact.runs)],
     ['Review runs', String(run.review.runs)],
+    ...(run.reference
+      ? [
+          ['Reference queries', String(run.reference.queries)],
+          ['Reference repos', String(run.reference.repos)],
+          ...(run.reference.unavailable ? [['Reference unavailable', String(run.reference.unavailable)]] : []),
+        ]
+      : []),
   ]);
+
+  const ex = run.exploration;
+  if (ex) {
+    const levels = Object.entries(ex.byLevel || {});
+    section(out, 'Exploration', [
+      ['Recommendations', String(ex.recommendations || 0)],
+      ...levels.map(([k, v]) => [`  level ${k}`, String(v)]),
+      ['Broad recommended', String(ex.broadRecommended || 0)],
+      ['Decomposed tasks', String(ex.decompositions || 0)],
+      ['Phases produced', String(ex.phases || 0)],
+    ]);
+  }
+
+  const ag = run.agents || {};
+  section(
+    out,
+    'Subagents observed',
+    ag.status === 'ok'
+      ? [
+          ['Subagents spawned', String(ag.spawned)],
+          ['Exploration agents', String(ag.exploration)],
+          ...Object.entries(ag.byType || {}).map(([k, v]) => [`  ${k}`, String(v)]),
+          [
+            'Subagent tokens',
+            ag.sidechain?.status === 'ok'
+              ? `${fmtCount(ag.sidechain.totalTokens)} (${ag.sidechain.requests} request${ag.sidechain.requests === 1 ? '' : 's'})`
+              : UNAVAILABLE,
+          ],
+          ...(ag.sidechain?.status === 'ok' ? [] : [['  reason', ag.sidechain?.reason || 'not recorded']]),
+          ['Source', ag.source],
+        ]
+      : [
+          ['Subagents spawned', UNAVAILABLE],
+          ['Reason', ag.reason || 'no runtime telemetry source'],
+        ],
+  );
 
   section(out, 'Verification', [
     ['Verify runs', String(run.verify.runs)],
@@ -138,8 +199,13 @@ export function compareRuns(a, b) {
       ...delta(a.context.estimatedYindeeContextTokens?.value, b.context.estimatedYindeeContextTokens?.value),
     },
     filesSuggested: delta(a.context.filesSuggested, b.context.filesSuggested),
+    filesSelected: delta(a.context.filesSelected, b.context.filesSelected),
+    candidates: delta(a.context.candidates, b.context.candidates),
+    selectedBytes: delta(a.context.selectedBytes, b.context.selectedBytes),
     filesAffected: delta(a.impact.filesAffected, b.impact.filesAffected),
     commands: delta(a.commands.total, b.commands.total),
+    mapRebuildsAvoided: delta(a.map?.rebuildsAvoided, b.map?.rebuildsAvoided),
+    broadExplorationRecommended: delta(a.exploration?.broadRecommended, b.exploration?.broadRecommended),
     verification: {
       runs: delta(a.verify.runs, b.verify.runs),
       retries: delta(a.verify.retries, b.verify.retries),
@@ -159,6 +225,13 @@ export function compareRuns(a, b) {
   } else {
     cmp.changes = { status: 'unavailable', reason: 'change measurement missing for at least one run' };
   }
+
+  const aa = a.agents || {};
+  const ab = b.agents || {};
+  cmp.agents =
+    aa.status === 'ok' && ab.status === 'ok'
+      ? { status: 'ok', spawned: delta(aa.spawned, ab.spawned), exploration: delta(aa.exploration, ab.exploration) }
+      : { status: 'unavailable', reason: 'subagent activity missing for at least one run' };
 
   const ta = a.claudeTokenUsage || {};
   const tb = b.claudeTokenUsage || {};
@@ -200,8 +273,20 @@ export function renderCompare(cmp) {
     ['  yindee context', fmtDelta(cmp.yindeeContextBytes, fmtBytes)],
     ['  est. tokens', fmtDelta(cmp.estimatedYindeeContextTokens, fmtCount) + '  (estimate vs estimate)'],
     ['  files suggested', fmtDelta(cmp.filesSuggested)],
+    ['  files selected', fmtDelta(cmp.filesSelected)],
+    ['  candidates ranked', fmtDelta(cmp.candidates)],
+    ['  selected bytes', fmtDelta(cmp.selectedBytes, fmtBytes)],
     ['  files affected', fmtDelta(cmp.filesAffected)],
     ['  yindee commands', fmtDelta(cmp.commands)],
+  ], 1));
+
+  out.push('');
+  out.push('Exploration');
+  out.push(columns([
+    ['  map rebuilds avoided', fmtDelta(cmp.mapRebuildsAvoided)],
+    ['  broad recommended', fmtDelta(cmp.broadExplorationRecommended)],
+    ['  subagents spawned', cmp.agents.status === 'ok' ? fmtDelta(cmp.agents.spawned) : `${UNAVAILABLE} — ${cmp.agents.reason}`],
+    ['  exploration agents', cmp.agents.status === 'ok' ? fmtDelta(cmp.agents.exploration) : UNAVAILABLE],
   ], 1));
 
   out.push('');
