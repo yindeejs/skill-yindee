@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, asList, toPosix, columns, fmtMs, fmtDuration } from './lib/util.mjs';
 import { findRepoRoot, exists, readJson } from './lib/fsx.mjs';
 import { loadMap, renderMap, mapPath } from './lib/map.mjs';
+import { initProject, renderInit, ensureInitialized, isInitialized } from './lib/init.mjs';
 import { computeImpact, renderImpact } from './lib/impact.mjs';
 import { runPlan, renderResults, saveResults, resultsPath } from './lib/verify.mjs';
 import { computeContext, renderContext } from './lib/context.mjs';
@@ -39,6 +40,7 @@ const measured = {};
 
 const HELP = `yindee — token-efficient development harness
 
+  init                      detect stack, packages, commands, CI; build + cache the map
   map                       project layout, packages, commands, CI (cached)
   context "<task>"          which packages / rules / files this task needs
   impact                    changed files -> affected packages -> risk tier -> verify plan
@@ -53,15 +55,17 @@ options
   --repo <dir>              repo to operate on (default: cwd, walked up to the root)
   --json                    machine-readable output
   --verbose                 do not truncate lists
+  init     --refresh
   map      --force
-  context  --paths a,b --limit N
+  context  --paths a,b --limit N --max-bytes N --batch N --reference <dir>[,<dir>]
   impact   --base <ref> --mode auto|worktree|staged|branch --tier docs|standard|broad|critical --paths a,b
   verify   --dry-run --bail --only lint,test --tier T --base <ref> --ci --timeout <ms>
   review   --base <ref> --max-lines N --max-per-file N --include-generated --context N
   benchmark start --label "<name>" --restart · report [<run>] · compare <a> <b> · prune --keep N
 
 flow
-  benchmark start -> context -> implement -> impact -> verify -> review -> benchmark stop`;
+  benchmark start -> context -> implement -> impact -> verify -> review -> benchmark stop
+  (init runs itself on first use — you only run it explicitly to inspect or refresh)`;
 
 const BENCH_HELP = `yindee benchmark — measured, never estimated
 
@@ -73,14 +77,32 @@ const BENCH_HELP = `yindee benchmark — measured, never estimated
   list                                   run ids in the bounded history
   prune [--keep N]                       drop everything older than the newest N (default ${tel.DEFAULT_KEEP})`;
 
+/**
+ * Load the map and, in the same breath, make sure the project is initialized.
+ * Initialization is a side effect of the map load every command already does,
+ * which is what lets a user run `/yindee <task>` without ever having run `init`.
+ */
 function getMap(force = false) {
   const { map, cached } = loadMap(ROOT, { force });
   measured.mapCached = cached;
+  const init = ensureInitialized(ROOT, map, { refresh: force });
+  measured.initStatus = init.status;
   return { map, cached };
 }
 
 function main() {
   switch (cmd) {
+    case 'init': {
+      const res = initProject(ROOT, { refresh: !!flags.refresh || !!flags.force });
+      measured.initStatus = res.status;
+      measured.mapCached = res.mapCached;
+      if (JSON_OUT) {
+        const { map, ...rest } = res;
+        return say(JSON.stringify(rest, null, 2));
+      }
+      return say(renderInit(res));
+    }
+
     case 'map': {
       const { map, cached } = getMap(!!flags.force);
       if (JSON_OUT) return say(JSON.stringify(map, null, 2));
@@ -100,8 +122,21 @@ function main() {
       const ctx = computeContext(ROOT, map, task, {
         paths: asList(flags.paths),
         limit: flags.limit ? Number(flags.limit) : undefined,
+        maxBytes: flags['max-bytes'] ? Number(flags['max-bytes']) : undefined,
+        batch: flags.batch ? Number(flags.batch) : undefined,
+        references: asList(flags.reference),
+        cwd: process.cwd(),
       });
       measured.files = ctx.files.map((f) => f.file);
+      measured.candidates = ctx.budget.candidates;
+      measured.selected = ctx.budget.selected.length;
+      measured.selectedBytes = ctx.budget.bytes;
+      measured.budgetHit = !ctx.budget.withinBudget;
+      measured.exploration = ctx.exploration.level;
+      measured.phases = ctx.exploration.decomposition.length;
+      measured.references = ctx.references.length;
+      measured.referencesUnavailable = ctx.references.filter((r) => !r.available).length;
+      measured.referencePaths = ctx.references.filter((r) => r.available).map((r) => r.path);
       return emit(ctx, renderContext(ctx, map, toPosix(path.relative(ROOT, SKILL_ROOT) || SKILL_ROOT), { quiet: !!flags.quiet }));
     }
 
@@ -232,6 +267,8 @@ function main() {
       rows.push(['stacks', map.stacks.join('+') || 'none detected', map.stacks.length ? 'ok' : 'CHECK']);
       rows.push(['packages', String(map.packages.length), map.packages.length ? 'ok' : 'CHECK']);
       rows.push(['map cache', toPosix(path.relative(ROOT, mapPath(ROOT))), cached ? 'hit' : 'rebuilt']);
+      rows.push(['initialized', isInitialized(ROOT) ? 'yes' : 'no', measured.initStatus || 'unknown']);
+      rows.push(['frameworks', map.frameworks?.join(', ') || '(none declared)', map.typescript ? 'typescript' : '-']);
       for (const key of ['fmtCheck', 'lint', 'typecheck', 'test', 'build']) {
         const c = map.commands[key];
         rows.push([`cmd ${key}`, c || '(none detected)', c ? (have(c.trim().split(/\s+/)[0]) ? 'ok' : 'tool missing') : '-']);

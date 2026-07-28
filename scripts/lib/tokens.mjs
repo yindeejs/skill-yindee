@@ -120,6 +120,99 @@ export function readTokenUsage({ sessionId, transcript, from = null, to = null, 
   return readTranscriptUsage(file, { from, to });
 }
 
+// ------------------------------------------------------------- subagents ---
+
+/**
+ * Subagent types that go looking around a repository. Naming them is how the
+ * exploration policy gets an honest scoreboard: "did this run spawn the thing
+ * the policy exists to prevent?"
+ */
+export const EXPLORATION_AGENTS = new Set(['Explore', 'general-purpose', 'Plan']);
+
+/**
+ * Subagent activity in a transcript window, read the same way usage is: from
+ * structured records the runtime wrote.
+ *
+ * Two independent signals, reported separately because they can be observable
+ * at different times:
+ *   · `spawned`   — `Task` tool_use blocks in the main transcript
+ *   · `sidechain` — usage on records flagged `isSidechain`, i.e. tokens the
+ *                   subagents themselves burned
+ * A window with a readable transcript and no Task blocks is a measurement of
+ * zero, not a missing measurement — that distinction is the whole point here.
+ */
+export function readAgentActivity({ sessionId, transcript, from = null, to = null, env = process.env } = {}) {
+  const id = sessionId || sessionIdOf(env);
+  const file = (transcript && exists(transcript) ? transcript : null) || findTranscript(id, env);
+  if (!file) {
+    return {
+      status: 'unavailable',
+      reason: id ? `no session transcript found for ${id}` : 'not running inside a Claude Code session',
+    };
+  }
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return { status: 'unavailable', reason: `transcript unreadable: ${file}` };
+  }
+
+  const byType = {};
+  let spawned = 0;
+  let exploration = 0;
+  const sideRequests = new Map();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const ts = rec.timestamp || null;
+    if (from && ts && ts < from) continue;
+    if (to && ts && ts > to) continue;
+
+    const content = rec?.message?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (block?.type !== 'tool_use' || block?.name !== 'Task') continue;
+        const type = block.input?.subagent_type || '(unspecified)';
+        spawned++;
+        byType[type] = (byType[type] || 0) + 1;
+        if (EXPLORATION_AGENTS.has(type)) exploration++;
+      }
+    }
+    if (rec.isSidechain === true && rec?.message?.usage) {
+      sideRequests.set(rec.requestId || rec.message?.id || rec.uuid, rec.message.usage);
+    }
+  }
+
+  let sidechainTokens = 0;
+  for (const u of sideRequests.values()) {
+    sidechainTokens +=
+      (Number(u.input_tokens) || 0) +
+      (Number(u.output_tokens) || 0) +
+      (Number(u.cache_read_input_tokens) || 0) +
+      (Number(u.cache_creation_input_tokens) || 0);
+  }
+
+  return {
+    status: 'ok',
+    source: 'claude-code-session-transcript',
+    transcript: file,
+    spawned,
+    exploration,
+    byType,
+    sidechain: sideRequests.size
+      ? { status: 'ok', requests: sideRequests.size, totalTokens: sidechainTokens }
+      : {
+          status: 'unavailable',
+          reason: 'no sidechain usage records in this transcript (subagent turns may be logged elsewhere)',
+        },
+  };
+}
+
 /**
  * Yindee's OWN generated context, in tokens. This is an ESTIMATE over bytes
  * Yindee printed — it is never Claude's usage and must always be rendered with

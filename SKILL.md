@@ -22,8 +22,8 @@ Run it in order. Do not skip to implementing, and **do not stop at the first fai
 | --- | --- | --- |
 | 0 | Measure | `Y benchmark start --label "<task>"` — idempotent; safe to run every time. |
 | 1 | Understand | Read the task. If it names an issue: `gh issue view <n>`. |
-| 2 | Orient | `Y map` — layout, packages, commands, CI. Cached; costs ~15 lines. |
-| 3 | Scope | `Y context "<task>"` — the packages, rules and files this task needs. |
+| 2 | Orient | `Y map` — layout, packages, commands, CI. Cached; costs ~15 lines. Initializes the project on first use, so `Y init` is optional. |
+| 3 | Scope | `Y context "<task>"` — the packages, rules and files this task needs, inside a context budget. Add `--reference <dir>` when the task names another repo. |
 | 4 | Load minimum | Read **only** what step 3 named, plus the rule files it lists. |
 | 5 | Implement | Edit those files. Match the surrounding code. |
 | 6 | Classify | `Y impact` — changed files → affected packages → risk tier → verify plan. |
@@ -36,6 +36,34 @@ Run it in order. Do not skip to implementing, and **do not stop at the first fai
 
 Steps 2–3 replace repository exploration. If you catch yourself globbing `**/*` or reading files to
 find your bearings, stop and run `Y context` instead.
+
+## Exploration policy (step 3 decides, not you)
+
+**If a script can answer it, you must not explore it. Task breadth does not justify repository
+breadth. Use agents for reasoning, never for rediscovering repository structure.**
+
+Yindee owns repository discovery: structure, stack, packages, components, tests, configuration,
+dependency edges, git impact, CI commands. Never spawn an agent to re-derive any of it.
+
+`Y context` prints an `explore` line. Obey it:
+
+| Level | What you may do |
+| --- | --- |
+| `none` | Open the files it listed. No agent. |
+| `targeted` | **One** agent, sequential, path-scoped to the `scoped:` paths it printed. |
+| `semantic` | **One** agent, for meaning grep cannot express. Still path-scoped. |
+| `broad` | Never printed. Yindee does not recommend it. |
+
+Before any broad, repo-wide agent you must first state, in the response: *"Yindee deterministic
+retrieval insufficient because …"* — naming what you asked Yindee for and what it could not answer.
+"The task is big" is not such a reason. Never run repository-wide agents in parallel.
+
+When `context` prints `phases`, the task is broad: work one phase per pass
+(`context --paths` → implement → `impact` → scoped `verify`), then verify broadly at the end.
+Decompose the work; do not widen the search.
+
+`budget` on the same output is the ceiling on what you may open. If it reports deferred files, finish
+the current batch before asking for `--batch 2` — do not read the whole candidate set.
 
 ## Risk tiers (step 6 decides, not you)
 
@@ -60,8 +88,10 @@ Override only with a reason: `Y impact --tier critical`.
 - **Command output is evidence, not scrollback.** `Y verify` already truncates to the failing lines;
   don't re-run tools with verbose flags unless the excerpt was genuinely insufficient.
 - **Work alone by default.** You have the whole context; a subagent starts empty and must re-derive
-  it. Spawn one only for (a) a genuinely broad search `context` couldn't scope, or (b) large
-  independent parallel edits with non-overlapping file sets. Never one agent per technology.
+  it. Spawn one only when the exploration policy above allows it, or for large independent parallel
+  edits with non-overlapping file sets. Never one agent per technology, and never one per repository.
+- **A second repo is a reference, not a second context.** `Y context "<task>" --reference <dir>`
+  maps it deterministically and returns the few files that pair with yours. Never explore it.
 
 ## Reporting: measured, never estimated
 
@@ -114,8 +144,11 @@ branch or working tree you do not own.
 ## Commands
 
 ```
+Y init [--refresh] [--json]              detect stack/packages/commands/CI, cache the map (automatic)
 Y map [--force] [--verbose]              layout, packages, deps, commands, CI  (cached)
 Y context "<task>" [--paths a,b]         packages + rules + files for this task
+        [--reference <dir>]              compare against another repo, deterministically
+        [--batch N] [--max-bytes N]      context budget: next batch / raise the ceiling
 Y impact [--base <ref>] [--tier T]       changed files → affected → tier → plan
 Y verify [--dry-run] [--only lint,test]  run the plan; failures only
 Y verify --ci                            run the commands CI itself declares
@@ -127,5 +160,6 @@ Y benchmark start|stop|report|compare    measured telemetry for the task (see ab
 ```
 
 If a command reports something wrong about the repo (missing command, wrong package), fix it in the
-repo's `.claude/yindee.json` (`commands`, `areas`, `sensitive` overrides) rather than working around
-it by hand — the next session inherits the fix.
+repo's `.claude/yindee.json` (`commands`, `areas`, `sensitive`, `context` overrides) rather than
+working around it by hand — the next session inherits the fix. The context budget lives there too:
+`{ "context": { "maxFiles": 20, "maxBytes": 150000 } }`.

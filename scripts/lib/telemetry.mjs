@@ -18,7 +18,7 @@ import { performance } from 'node:perf_hooks';
 import { readJson, writeJson, readText, exists, listDir, ensureLocalExclude } from './fsx.mjs';
 import { sha1, uniq, toPosix } from './util.mjs';
 import { capture } from './sh.mjs';
-import { readTokenUsage, estimateContextTokens, sessionIdOf, findTranscript } from './tokens.mjs';
+import { readTokenUsage, readAgentActivity, estimateContextTokens, sessionIdOf, findTranscript } from './tokens.mjs';
 
 export const SCHEMA_VERSION = 1;
 export const DEFAULT_KEEP = 20;
@@ -262,6 +262,7 @@ const add = (obj, key, n = 1) => (obj[key] = (obj[key] || 0) + n);
 export function aggregate(session, events, extra = {}) {
   const { skippedEvents = 0, changes = null, claudeTokenUsage = null, now = Date.now(), status } = extra;
   const tokenWindow = extra.tokenWindow ?? null;
+  const agents = extra.agents ?? null;
 
   const byCommand = {};
   const outputByCommand = {};
@@ -283,6 +284,22 @@ export function aggregate(session, events, extra = {}) {
   let shellCount = 0;
   let shellMs = 0;
   let commandMs = 0;
+  // init / budget / exploration / reference counters
+  let initRuns = 0;
+  let initCreated = 0;
+  let initValid = 0;
+  let initRefreshed = 0;
+  let initUpdated = 0;
+  let candidates = 0;
+  let selected = 0;
+  let selectedBytes = 0;
+  let budgetHits = 0;
+  let refQueries = 0;
+  let refUnavailable = 0;
+  const refRepos = [];
+  const explorationByLevel = {};
+  let decompositions = 0;
+  let phases = 0;
 
   for (const ev of events) {
     add(byCommand, ev.cmd);
@@ -297,10 +314,25 @@ export function aggregate(session, events, extra = {}) {
       case 'map':
         mapRuns++;
         break;
+      case 'init':
+        initRuns++;
+        break;
       case 'context':
         contextRuns++;
         contextBytes += bytes;
         if (Array.isArray(ev.files)) suggested.push(...ev.files);
+        candidates += Number(ev.candidates) || 0;
+        selected += Number(ev.selected) || 0;
+        selectedBytes += Number(ev.selectedBytes) || 0;
+        if (ev.budgetHit === true) budgetHits++;
+        refQueries += Number(ev.references) || 0;
+        refUnavailable += Number(ev.referencesUnavailable) || 0;
+        if (Array.isArray(ev.referencePaths)) refRepos.push(...ev.referencePaths);
+        if (ev.exploration) add(explorationByLevel, String(ev.exploration));
+        if (Number(ev.phases) > 0) {
+          decompositions++;
+          phases += Number(ev.phases);
+        }
         break;
       case 'impact':
         impactRuns++;
@@ -323,6 +355,16 @@ export function aggregate(session, events, extra = {}) {
     // `impact` and `verify` all load it, and all of them pay or save that cost.
     if (ev.mapCached === true) cacheHits++;
     else if (ev.mapCached === false) cacheMisses++;
+
+    // Init status rides on every command that loaded the map, which is what
+    // makes automatic initialization measurable rather than merely claimed.
+    switch (ev.initStatus) {
+      case 'valid': initValid++; break;
+      case 'created': initCreated++; break;
+      case 'refreshed': initRefreshed++; break;
+      case 'updated': initUpdated++; break;
+      default: break;
+    }
   }
 
   const startedAtEpochMs = session.startedAtEpochMs ?? Date.parse(session.startedAt);
@@ -338,13 +380,36 @@ export function aggregate(session, events, extra = {}) {
     finishedAt: session.finishedAt ?? new Date(finishedAtEpochMs).toISOString(),
     wallClockDurationMs,
     commands: { total: events.length, totalMs: commandMs, byName: byCommand },
-    map: { runs: mapRuns, cacheHits, cacheMisses },
+    // `rebuildsAvoided` is the same event as a cache hit, named for what it
+    // bought: a map load that did not re-walk the repository.
+    map: { runs: mapRuns, cacheHits, cacheMisses, rebuildsAvoided: cacheHits },
+    init: {
+      runs: initRuns,
+      created: initCreated,
+      cacheHits: initValid,
+      refreshes: initRefreshed,
+      updates: initUpdated,
+      automatic: Math.max(0, initCreated + initUpdated - initRuns),
+    },
     context: {
       runs: contextRuns,
       bytes: contextBytes,
       estimatedYindeeContextTokens: estimateContextTokens(contextBytes),
       filesSuggested: uniq(suggested).length,
+      candidates,
+      filesSelected: selected,
+      selectedBytes,
+      budgetHits,
     },
+    reference: { queries: refQueries, repos: uniq(refRepos).length, unavailable: refUnavailable },
+    exploration: {
+      byLevel: explorationByLevel,
+      recommendations: Object.values(explorationByLevel).reduce((a, b) => a + b, 0),
+      broadRecommended: explorationByLevel.broad || 0,
+      decompositions,
+      phases,
+    },
+    agents: agents || { status: 'unavailable', reason: 'not measured' },
     impact: { runs: impactRuns, filesAffected: uniq(affected).length },
     verify: {
       runs: verifyRuns,
@@ -374,17 +439,21 @@ export function statusOf(root, { tokens = false } = {}) {
   if (!session) return { active: false };
   if (session.corrupt) return { active: false, corrupt: true, file: session.file };
   const { events, skipped } = readEvents(root);
-  const claudeTokenUsage = tokens
-    ? readTokenUsage({
-        sessionId: session.claudeSessionId,
-        transcript: session.transcript,
-        from: session.startedAt,
-      })
-    : null;
+  const window = {
+    sessionId: session.claudeSessionId,
+    transcript: session.transcript,
+    from: session.startedAt,
+  };
+  const claudeTokenUsage = tokens ? readTokenUsage(window) : null;
   return {
     active: true,
     session,
-    summary: aggregate(session, events, { skippedEvents: skipped, claudeTokenUsage, status: 'running' }),
+    summary: aggregate(session, events, {
+      skippedEvents: skipped,
+      claudeTokenUsage,
+      agents: readAgentActivity(window),
+      status: 'running',
+    }),
   };
 }
 
@@ -423,6 +492,7 @@ export function stopSession(root, opts = {}) {
     skippedEvents: skipped,
     changes: measureChanges(root, session),
     claudeTokenUsage: readTokenUsage(tokenWindow),
+    agents: readAgentActivity(tokenWindow),
     tokenWindow,
     status: closed.status,
   });
@@ -479,10 +549,20 @@ export function loadRun(root, ref) {
  * another, and never invents one.
  */
 export function refreshTokenUsage(root, run) {
-  if (!run || run.claudeTokenUsage?.status === 'ok' || !run.tokenWindow) return { run, refreshed: false };
-  const usage = readTokenUsage(run.tokenWindow);
-  if (usage.status !== 'ok') return { run, refreshed: false };
-  const updated = { ...run, claudeTokenUsage: usage };
+  if (!run?.tokenWindow) return { run, refreshed: false };
+  const wantUsage = run.claudeTokenUsage?.status !== 'ok';
+  const wantAgents = run.agents?.status !== 'ok';
+  if (!wantUsage && !wantAgents) return { run, refreshed: false };
+
+  const usage = wantUsage ? readTokenUsage(run.tokenWindow) : null;
+  const agents = wantAgents ? readAgentActivity(run.tokenWindow) : null;
+  if (usage?.status !== 'ok' && agents?.status !== 'ok') return { run, refreshed: false };
+
+  const updated = {
+    ...run,
+    ...(usage?.status === 'ok' ? { claudeTokenUsage: usage } : {}),
+    ...(agents?.status === 'ok' ? { agents } : {}),
+  };
   try {
     writeJson(runFile(root, run.id), updated);
   } catch {
