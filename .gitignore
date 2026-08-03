@@ -2,6 +2,11 @@
 # benchmark telemetry and run history. All machine-local, never committed.
 .claude/yindee/
 
+# Yindee vendored into its own repo by `yindee install`. Byte-for-byte copy of
+# scripts/, rules/, references/ and templates/ at the root, which are the source
+# of truth. Tracking it would mean syncing every edit twice.
+.claude/skills/
+
 # Dependencies (Yindee itself has none; this is for contributors' tooling)
 node_modules/
 
