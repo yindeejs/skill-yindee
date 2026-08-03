@@ -80,9 +80,14 @@ export function computeContext(root, map, task, opts = {}) {
 }
 
 export function renderContext(ctx, map, skillRoot, opts = {}) {
+  // Quiet keeps only what the reader must act on: scope, rules, docs, files,
+  // budget, explore. The task echo and the tokenizer's view are debug output.
+  const quiet = !!opts.quiet;
   const out = [];
-  out.push(`task   ${ctx.task}`);
-  if (ctx.tokens.length) out.push(`tokens ${ctx.tokens.slice(0, 10).join(' ')}`);
+  if (!quiet) {
+    out.push(`task   ${ctx.task}`);
+    if (ctx.tokens.length) out.push(`tokens ${ctx.tokens.slice(0, 10).join(' ')}`);
+  }
   out.push(
     `scope  pkgs: ${ctx.packages.length ? ctx.packages.map((p) => p.pkg.name).join(', ') : '(whole repo — narrow the task)'}` +
       `  |  areas: ${ctx.areas.join(', ') || 'unclassified'}`,
@@ -115,10 +120,12 @@ export function renderContext(ctx, map, skillRoot, opts = {}) {
   if (ctx.references?.length) out.push(renderReferences(ctx.references));
   if (ctx.exploration) out.push(renderExploration(ctx.exploration));
 
-  const c = map.commands || {};
-  const p = ctx.packages[0]?.pkg;
-  const testCmd = p && c.testPkg ? c.testPkg.replace('{pkg}', p.name).replace('{path}', p.path) : c.test;
-  if (testCmd) out.push(`cmds   test: ${testCmd}`);
-  if (!opts.quiet) out.push('next   implement, then: yindee impact  ->  yindee verify');
+  if (!quiet) {
+    const c = map.commands || {};
+    const p = ctx.packages[0]?.pkg;
+    const testCmd = p && c.testPkg ? c.testPkg.replace('{pkg}', p.name).replace('{path}', p.path) : c.test;
+    if (testCmd) out.push(`cmds   test: ${testCmd}`);
+    out.push('next   implement, then: yindee impact  ->  yindee verify');
+  }
   return out.join('\n');
 }

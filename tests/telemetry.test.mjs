@@ -56,12 +56,15 @@ function makeFixtureRepo(root) {
   }
 }
 
+// Telemetry and benchmark are opt-in modules, so this suite opts in. What is
+// under test is their behavior, not their gate — the gate is covered in
+// tests/registry.test.mjs.
 const cli = (root, args, env = {}) =>
   execFileSync(process.execPath, [CLI, ...args, '--repo', root], {
     cwd: root,
     encoding: 'utf8',
     stdio: 'pipe',
-    env: { ...process.env, ...env },
+    env: { ...process.env, YINDEE_MODULES: 'benchmark,telemetry', ...env },
   });
 
 before(() => {

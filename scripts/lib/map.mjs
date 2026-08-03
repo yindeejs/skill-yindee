@@ -135,7 +135,8 @@ export function loadMap(root, { force = false, write = true } = {}) {
 const short = (s, n) => (s && s.length > n ? s.slice(0, n - 1) + '…' : s || '');
 
 /** Compact human/LLM digest — this is what agents read, not the JSON. */
-export function renderMap(map, { verbose = false } = {}) {
+export function renderMap(map, { verbose = false, quiet = false } = {}) {
+  const cap = verbose ? 500 : quiet ? 12 : 40;
   const out = [];
   const g = map.git;
   out.push(
@@ -153,16 +154,18 @@ export function renderMap(map, { verbose = false } = {}) {
   if (map.packages.length) {
     out.push('pkgs');
     const rows = map.packages
-      .slice(0, verbose ? 500 : 40)
+      .slice(0, cap)
       .map((p) => [
         '  ' + short(p.name, 28),
         p.path,
         p.kind,
         (p.areas || []).join(',') || '-',
-        p.deps.length ? '-> ' + p.deps.slice(0, 4).join(',') + (p.deps.length > 4 ? ',…' : '') : '',
+        // Dependency edges are what `context`/`impact` consume; a human reading
+        // the map rarely needs them, so quiet drops the column.
+        quiet || !p.deps.length ? '' : '-> ' + p.deps.slice(0, 4).join(',') + (p.deps.length > 4 ? ',…' : ''),
       ]);
     out.push(columns(rows));
-    if (map.packages.length > 40 && !verbose) out.push(`  … ${map.packages.length - 40} more (--verbose)`);
+    if (map.packages.length > cap) out.push(`  … ${map.packages.length - cap} more (--verbose)`);
   }
 
   const cmdKeys = ['fmtCheck', 'lint', 'typecheck', 'test', 'build'];
