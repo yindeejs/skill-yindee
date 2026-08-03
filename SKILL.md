@@ -62,12 +62,18 @@ Yindee's own file — and `Y modules` names the winner. Never install a skill to
 no elapsed time, no token count, no cost. Say what now works. Do not reconstruct figures from
 memory.
 
+Two modules supply facts, and they do not carry the same authority. **`intelligence`** is
+derived from git and the code — authoritative about what exists and where. **`knowledge`** is
+human prose (ADRs, conventions, design notes) surfaced as a `why` line — it explains intent,
+it can be out of date, and **on any conflict the code wins**. Never cite a document as evidence
+about what the code does; check the code.
+
 Enable per repo with `Y modules enable <name>`, or per command with `--module <name>` /
 `YINDEE_MODULES=<name>`.
 
 ## Reference
 
-- `Y help` — every command and flag.
+- `Y help` — every command and flag. `Y intel` / `Y wiki` — what each layer knows.
 - `references/workflow.md` — branches, commits, PRs, CI. Read before your first one.
 - `README.md` — module table, risk tiers, supported stacks, per-repo config.
 

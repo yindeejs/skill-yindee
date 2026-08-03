@@ -15,7 +15,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { readJson, writeJson, readText, exists, listDir, ensureLocalExclude } from './fsx.mjs';
+import { readJson, writeJsonAtomic, readText, exists, listDir, ensureLocalExclude } from './fsx.mjs';
 import { sha1, uniq, toPosix } from './util.mjs';
 import { capture } from './sh.mjs';
 import { readTokenUsage, readAgentActivity, estimateContextTokens, sessionIdOf, findTranscript } from './tokens.mjs';
@@ -86,7 +86,7 @@ export function startSession(root, opts = {}) {
   };
   fs.mkdirSync(telemetryDir(root), { recursive: true });
   fs.writeFileSync(eventsFile(root), '');
-  writeJson(sessionFile(root), session);
+  writeJsonAtomic(sessionFile(root), session);
   ensureLocalExclude(root);
   return { session, created: true, replaced: !!existing };
 }
@@ -499,7 +499,7 @@ export function stopSession(root, opts = {}) {
 
   try {
     fs.mkdirSync(runsDir(root), { recursive: true });
-    writeJson(runFile(root, summary.id), summary);
+    writeJsonAtomic(runFile(root, summary.id), summary);
     fs.rmSync(sessionFile(root), { force: true });
     fs.rmSync(eventsFile(root), { force: true });
   } catch {
@@ -564,7 +564,7 @@ export function refreshTokenUsage(root, run) {
     ...(agents?.status === 'ok' ? { agents } : {}),
   };
   try {
-    writeJson(runFile(root, run.id), updated);
+    writeJsonAtomic(runFile(root, run.id), updated);
   } catch {
     /* read-only checkout: the caller still gets the fresher numbers */
   }

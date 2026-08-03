@@ -8,7 +8,7 @@
 // a reference checkout — which may be read-only, or simply not ours — is never
 // written to.
 import path from 'node:path';
-import { readJson, writeJson, exists, findRepoRoot, fingerprint } from './fsx.mjs';
+import { readJson, writeJsonAtomic, exists, findRepoRoot, fingerprint } from './fsx.mjs';
 import { buildMap, MAP_VERSION, harnessFingerprint } from './map.mjs';
 import { fileCandidates, scoreAreas, scorePackages } from './candidates.mjs';
 import { applyBudget, budgetFor, DEFAULT_REFERENCE_BUDGET } from './budget.mjs';
@@ -55,7 +55,7 @@ export function loadReferenceMap(mainRoot, refRoot, { force = false } = {}) {
   }
   const map = buildMap(refRoot);
   try {
-    writeJson(file, { root: toPosix(refRoot), map });
+    writeJsonAtomic(file, { root: toPosix(refRoot), map });
   } catch {
     /* read-only main checkout: still usable in memory */
   }

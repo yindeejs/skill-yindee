@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { detect } from './detect.mjs';
 import { state as gitState } from './gitx.mjs';
 import { areasOf } from './areas.mjs';
-import { collectFiles, exists, readJson, writeJson, fingerprint, ensureLocalExclude } from './fsx.mjs';
+import { collectFiles, exists, readJson, writeJsonAtomic, fingerprint, ensureLocalExclude } from './fsx.mjs';
 import { columns, uniq, sha1 } from './util.mjs';
 
 export const MAP_VERSION = 2;
@@ -123,7 +123,7 @@ export function loadMap(root, { force = false, write = true } = {}) {
   const map = buildMap(root);
   if (write) {
     try {
-      writeJson(file, map);
+      writeJsonAtomic(file, map);
       ensureLocalExclude(root);
     } catch {
       /* read-only checkout: still usable in memory */

@@ -19,6 +19,8 @@ import * as tel from './lib/telemetry.mjs';
 import { readTokenUsage } from './lib/tokens.mjs';
 import { renderReport, compareRuns, renderCompare } from './lib/benchmark.mjs';
 import { resolveModules, renderModules, setModule, MODULES } from './lib/registry.mjs';
+import { load as intelLoad, clear as intelClear, renderIntel } from './lib/intel.mjs';
+import { load as wikiLoad, clear as wikiClear, renderWiki } from './lib/wiki.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { flags, positional } = parseArgs(process.argv.slice(2));
@@ -32,6 +34,14 @@ const mods = resolveModules(ROOT, flags);
 const on = (name) => mods.enabled.has(name);
 const VERBOSE = mods.level === 'verbose';
 const QUIET = !VERBOSE;
+
+// Repository Intelligence, loaded at most once per process and only when
+// something asks for it. `null` always means "use the live path".
+let intelCache;
+const intel = () => {
+  if (intelCache === undefined) intelCache = on('intelligence') ? intelLoad(ROOT) : null;
+  return intelCache;
+};
 
 // Telemetry measures what this process actually emitted, so the byte count is
 // the real thing rather than a guess at it.
@@ -55,6 +65,8 @@ const HELP = `yindee — token-efficient development harness
   verify                    run that plan; reports failures only
   review                    bounded diff + path-scoped checklist + failure evidence
   status                    branch, base, PR, CI, pending work
+  intel [rebuild]           repository index: what is indexed, and how fresh
+  wiki [rebuild]            knowledge documents found — why, never what
   modules                   which behaviors are on, and who provides them
   install                   vendor the harness into a repo (.claude/skills/yindee)
   doctor                    environment + self-check
@@ -130,7 +142,11 @@ function main() {
         return;
       }
       const { map } = getMap();
+      measured.intel = intel()?.status || 'off';
+      const knowledge = on('knowledge') ? wikiLoad(ROOT, { config: map.config || {} }) : null;
       const ctx = computeContext(ROOT, map, task, {
+        intel: intel(),
+        wiki: knowledge,
         paths: asList(flags.paths),
         limit: flags.limit ? Number(flags.limit) : undefined,
         maxBytes: flags['max-bytes'] ? Number(flags['max-bytes']) : undefined,
@@ -160,6 +176,7 @@ function main() {
     case 'impact': {
       const { map } = getMap();
       const impact = computeImpact(ROOT, map, {
+        intel: intel(),
         base: flags.base ? String(flags.base) : null,
         mode: flags.mode ? String(flags.mode) : 'auto',
         tier: flags.tier ? String(flags.tier) : null,
@@ -326,6 +343,37 @@ function main() {
       return emit({ map, rows }, columns(rows));
     }
 
+    case 'intel': {
+      if (!on('intelligence')) {
+        return emit(
+          { module: 'intelligence', enabled: false },
+          'intelligence disabled — enable: yindee modules enable intelligence',
+        );
+      }
+      if (positional[1] === 'rebuild') {
+        const cleared = intelClear(ROOT);
+        const res = intelLoad(ROOT);
+        return emit({ cleared, ...res, files: undefined }, `intel  rebuilt (dropped ${cleared.removed.length} file(s))\n` + renderIntel(ROOT, res));
+      }
+      const res = intelLoad(ROOT);
+      if (JSON_OUT) {
+        const { files, ...rest } = res;
+        return say(JSON.stringify({ ...rest, count: files ? Object.keys(files).length : 0 }, null, 2));
+      }
+      return say(renderIntel(ROOT, res));
+    }
+
+    case 'wiki': {
+      if (!on('knowledge')) {
+        return emit({ module: 'knowledge', enabled: false }, 'knowledge disabled — enable: yindee modules enable knowledge');
+      }
+      const { map } = getMap();
+      if (positional[1] === 'rebuild') wikiClear(ROOT);
+      const res = wikiLoad(ROOT, { config: map.config || {} });
+      if (JSON_OUT) return say(JSON.stringify(res, null, 2));
+      return say(renderWiki(ROOT, res));
+    }
+
     case 'modules': {
       const sub = positional[1] || 'list';
       if (sub === 'enable' || sub === 'disable') {
@@ -337,7 +385,7 @@ function main() {
         }
         const res = setModule(ROOT, name, sub === 'enable');
         // Re-resolve so the table reflects the write we just made.
-        const next = resolveModules(ROOT, flags);
+        const next = resolveModules(ROOT, flags, process.env, { detectAll: true });
         return emit(
           { ...res, ...next, source: Object.fromEntries(next.source) },
           `modules ${name} ${sub}d in ${toPosix(path.relative(ROOT, res.file))}` +
@@ -351,8 +399,11 @@ function main() {
         process.exitCode = 2;
         return;
       }
-      return emit({ ...mods, enabled: [...mods.enabled], source: Object.fromEntries(mods.source) },
-        renderModules(mods, { verbose: VERBOSE }));
+      // Ordinary commands skip detection for modules that are off; the table is
+      // the one place that wants the whole picture, so it pays for it here.
+      const full = resolveModules(ROOT, flags, process.env, { detectAll: true });
+      return emit({ ...full, enabled: [...full.enabled], source: Object.fromEntries(full.source) },
+        renderModules(full, { verbose: VERBOSE }));
     }
 
     case 'benchmark':

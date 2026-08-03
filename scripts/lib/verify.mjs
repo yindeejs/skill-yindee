@@ -1,7 +1,7 @@
 // Runs a verification plan and reports evidence, not scrollback.
 import path from 'node:path';
 import { run, have } from './sh.mjs';
-import { writeJson, exists } from './fsx.mjs';
+import { writeJsonAtomic, exists } from './fsx.mjs';
 import { errorExcerpt, fmtMs, columns } from './util.mjs';
 
 export const resultsPath = (root) => path.join(root, '.claude', 'yindee', 'last-verify.json');
@@ -53,7 +53,7 @@ export function runPlan(root, steps, opts = {}) {
 
 export function saveResults(root, payload) {
   try {
-    writeJson(resultsPath(root), payload);
+    writeJsonAtomic(resultsPath(root), payload);
   } catch {
     /* read-only checkout */
   }

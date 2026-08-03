@@ -27,7 +27,10 @@ const w = (root, rel, content) => {
 };
 /** A repo with no HOME leakage: detection must not see the developer's own skills. */
 const isolated = (extra = {}) => ({ ...process.env, CLAUDE_CONFIG_DIR: path.join(TMP, 'no-such-config'), YINDEE_MODULES: '', ...extra });
-const resolve = (root, flags = {}, env = {}) => resolveModules(root, flags, isolated(env));
+// Provider-mechanics tests want the whole table detected. Ordinary commands
+// deliberately skip detection for modules that are off — asserted separately.
+const resolve = (root, flags = {}, env = {}) => resolveModules(root, flags, isolated(env), { detectAll: true });
+const resolveLazy = (root, flags = {}, env = {}) => resolveModules(root, flags, isolated(env));
 
 const run = (args, opts = {}) =>
   execFileSync(process.execPath, [CLI, ...args], {
@@ -71,8 +74,21 @@ describe('terminal-provider invariant', () => {
     }
   });
 
-  test('resolution always yields an active provider', () => {
-    for (const r of resolve(TMP).resolved) assert.ok(r.active, `${r.module} resolved to nothing`);
+  test('every enabled module resolves to an active provider', () => {
+    for (const r of resolve(TMP).resolved.filter((x) => x.enabled)) {
+      assert.ok(r.active, `${r.module} resolved to nothing`);
+    }
+  });
+
+  test('detection is skipped for modules that are off', () => {
+    const lazy = resolveLazy(TMP).resolved;
+    for (const r of lazy.filter((x) => !x.enabled)) {
+      assert.equal(r.detected, false, `${r.module} paid for detection while disabled`);
+    }
+    for (const r of lazy.filter((x) => x.enabled)) {
+      assert.equal(r.detected, true);
+      assert.ok(r.active, `${r.module} is on but resolved to nothing`);
+    }
   });
 });
 

@@ -63,6 +63,20 @@ Providers   who fulfils a module: an installed skill, a builtin doc, or core its
 git and the build system, and it has no knowledge of which modules exist — it asks the
 registry and acts on the answer.
 
+Two modules supply facts, and the split between them is deliberate:
+
+| | Repository Intelligence (`intelligence`) | Knowledge Wiki (`knowledge`) |
+| --- | --- | --- |
+| Answers | **what** and **where** | **why** |
+| Source | git, paths, source files | human-authored documents |
+| Authority over code | **authoritative** | **never** — code wins on conflict |
+| Freshness | invalidated per commit | ages; flagged via `stale?`, never trusted |
+| Absent | falls back to the live scan | contributes nothing, silently |
+
+They share no code and no store, and neither reads the other. `impact.mjs` and `verify.mjs`
+do not import `wiki.mjs` at all — a test asserts it — so a document can never change a risk
+tier or a verification plan.
+
 **Modules** are the switches. Each has a default, optional `requires`, and an optional doc
 under `modules/` that the agent reads only when the module is on.
 
@@ -103,6 +117,8 @@ scripts/
     tokens.mjs        actual Claude token usage, or an honest "unavailable"
     benchmark.mjs     report + comparison rendering
     registry.mjs      modules + providers: what is on, and who provides it
+    intel.mjs         repository index: incremental, git-keyed, what and where
+    wiki.mjs          knowledge documents: headings only, why and nothing else
     sh.mjs fsx.mjs util.mjs toml.mjs
 rules/                frontend, backend, database, security — loaded only when named
 modules/              one file per optional behavior — loaded only when the module is on
@@ -134,6 +150,8 @@ No rebuild required.
 | `verify` | Run that plan. Reports failures only, truncated to the evidence. |
 | `review` | Bounded diff + path-scoped checklist + failure evidence. |
 | `status` | Branch, base, ahead/behind, open PR, CI checks, linked issue. |
+| `intel` | What the repository index knows, how fresh it is, how large. |
+| `wiki` | Which knowledge documents exist, by kind, and which look stale. |
 | `modules` | Which behaviors are on, why, and who provides each one. |
 | `benchmark` | Measured duration, token usage and verification metrics. **Opt-in module.** |
 | `install` | Vendor the harness into a repo for teammates and CI. |
@@ -155,6 +173,8 @@ and which provider won.
 | Module | Default | Governs | Providers, highest priority first |
 | --- | --- | --- | --- |
 | `concise-output` | **on** | response shape — answer first, no preamble, no recap | `i-have-adhd` *(skill, defer-only)* → builtin |
+| `intelligence` | **on** | repository index — **what** / **where** | `repo-index` *(index)* → `live-scan` *(core)* |
+| `knowledge` | **on** | project documents — **why** | `local-wiki` *(wiki)* → `none` *(core)* |
 | `taste-formatting` | off | UI/design output quality (design artefacts only) | `design-taste-frontend` *(skill)* → builtin |
 | `workflow` | off | review · TDD · debugging · docs judgement | `code-review-and-quality`, `test-driven-development`, `debugging-and-error-recovery`, `documentation-and-adrs` *(skills)* → core |
 | `telemetry` | off | per-command event recording | core |

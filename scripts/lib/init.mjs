@@ -5,7 +5,7 @@
 // a small state file recording that this repo has been fingerprinted, so a
 // second run costs one stat sweep and prints three lines.
 import path from 'node:path';
-import { readJson, writeJson, exists, ensureLocalExclude } from './fsx.mjs';
+import { readJson, writeJsonAtomic, exists, ensureLocalExclude } from './fsx.mjs';
 import { loadMap, mapPath } from './map.mjs';
 import { state as gitState } from './gitx.mjs';
 import { sha1, columns, uniq, toPosix } from './util.mjs';
@@ -91,7 +91,7 @@ export function ensureInitialized(root, map, { refresh = false } = {}) {
   };
   let wrote = false;
   try {
-    writeJson(initPath(root), state);
+    writeJsonAtomic(initPath(root), state);
     ensureLocalExclude(root);
     wrote = true;
   } catch {
