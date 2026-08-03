@@ -44,7 +44,12 @@ export function install(skillRoot, target, opts = {}) {
   const dest = path.join(target, '.claude', 'skills', 'yindee');
   const skillRel = '.claude/skills/yindee';
 
-  if (path.resolve(dest) === path.resolve(skillRoot)) {
+  // Two ways a repo can already be the harness: the vendored copy installing
+  // back into the repo that holds it, and the source checkout installing into
+  // itself. The second one used to slip through — `dest` never equals
+  // `skillRoot` there — and rewrote the source repo's own CLAUDE.md to point at
+  // a vendored path it does not use.
+  if (path.resolve(dest) === path.resolve(skillRoot) || path.resolve(target) === path.resolve(skillRoot)) {
     return { actions: ['nothing to do — target is the skill source itself'], dest };
   }
 

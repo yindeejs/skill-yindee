@@ -25,6 +25,18 @@ import { load as wikiLoad, clear as wikiClear, renderWiki } from './lib/wiki.mjs
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const cmd = positional[0] || 'help';
+
+// A flag with no value parses to boolean `true`. For a flag that names a
+// directory that is not a default worth guessing: `String(true)` resolves to a
+// path literally named "true", and `install` would then create it. Refuse
+// before anything touches the filesystem.
+for (const key of ['repo', 'target']) {
+  if (flags[key] === true) {
+    process.stdout.write(`yindee: --${key} needs a directory\n`);
+    process.exit(2);
+  }
+}
+
 const ROOT = findRepoRoot(path.resolve(flags.repo ? String(flags.repo) : process.cwd()));
 const JSON_OUT = !!flags.json;
 
