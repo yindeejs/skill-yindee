@@ -49,6 +49,27 @@ What is left over — design, trade-offs, actually writing the code — is what 
 
 ## Architecture
 
+Three layers. Each knows only the one below it.
+
+```
+Core        deterministic engine — detect · map · context · impact · verify · review
+   ↓          resolveModules(root, flags)
+Modules     named behaviors, each an on/off switch, resolved from config
+   ↓          ordered chain, first present wins
+Providers   who fulfils a module: an installed skill, a builtin doc, or core itself
+```
+
+**Core** is the part that must never guess. It answers repository questions from manifests,
+git and the build system, and it has no knowledge of which modules exist — it asks the
+registry and acts on the answer.
+
+**Modules** are the switches. Each has a default, optional `requires`, and an optional doc
+under `modules/` that the agent reads only when the module is on.
+
+**Providers** are who actually does it. Every chain ends in a provider that is always present
+(`builtin` or `core`), so a missing external skill degrades output by a notch — it can never
+break a command, and Yindee never installs anything to satisfy one.
+
 ```mermaid
 flowchart LR
     A[detect] --> B[map]
@@ -56,11 +77,9 @@ flowchart LR
     B --> D[impact]
     D --> E[verify]
     D --> F[review]
-    G[(telemetry)] -.records.- C
-    G -.records.- D
-    G -.records.- E
-    G -.records.- F
-    G --> H[benchmark]
+    R{{registry}} -.gates.- G
+    G[(telemetry)] -.off by default.- H[benchmark]
+    R -.selects provider.- M[modules/*.md]
 ```
 
 ```
@@ -83,8 +102,10 @@ scripts/
     telemetry.mjs     measured session counters, persisted run history
     tokens.mjs        actual Claude token usage, or an honest "unavailable"
     benchmark.mjs     report + comparison rendering
+    registry.mjs      modules + providers: what is on, and who provides it
     sh.mjs fsx.mjs util.mjs toml.mjs
 rules/                frontend, backend, database, security — loaded only when named
+modules/              one file per optional behavior — loaded only when the module is on
 references/           git-native team workflow
 templates/            lean CLAUDE.md router for `install`
 ```
@@ -113,12 +134,105 @@ No rebuild required.
 | `verify` | Run that plan. Reports failures only, truncated to the evidence. |
 | `review` | Bounded diff + path-scoped checklist + failure evidence. |
 | `status` | Branch, base, ahead/behind, open PR, CI checks, linked issue. |
-| `benchmark` | Measured duration, token usage and verification metrics for a task. |
+| `modules` | Which behaviors are on, why, and who provides each one. |
+| `benchmark` | Measured duration, token usage and verification metrics. **Opt-in module.** |
 | `install` | Vendor the harness into a repo for teammates and CI. |
 | `doctor` | Environment and detection self-check. |
 
 Plus: risk tiering (`docs` / `standard` / `broad` / `critical`) that decides verification depth from
 the paths that changed, per-repo overrides, and on-demand rule files.
+
+## Modules and extension points
+
+Everything beyond the deterministic loop is a module. `yindee modules` shows the state of each
+and which provider won.
+
+> **`SKILL.md` is a router, this README is the reference.** The tables below — modules, providers,
+> risk tiers — are deliberately *not* in `SKILL.md`, because `yindee modules` and `yindee impact`
+> print the same information at the moment it applies. Keep them here. Re-inlining them into
+> `SKILL.md` puts bytes back into every task's prompt and buys nothing.
+
+| Module | Default | Governs | Providers, highest priority first |
+| --- | --- | --- | --- |
+| `concise-output` | **on** | response shape — answer first, no preamble, no recap | `i-have-adhd` *(skill, defer-only)* → builtin |
+| `taste-formatting` | off | UI/design output quality (design artefacts only) | `design-taste-frontend` *(skill)* → builtin |
+| `workflow` | off | review · TDD · debugging · docs judgement | `code-review-and-quality`, `test-driven-development`, `debugging-and-error-recovery`, `documentation-and-adrs` *(skills)* → core |
+| `telemetry` | off | per-command event recording | core |
+| `benchmark` | off | measured reporting; requires `telemetry` | core |
+| `verbose` | off | full, untruncated command output | core |
+
+```
+$ yindee modules
+module              state  source   provider
+  concise-output    on     default  modules/concise-output.md (builtin)
+  taste-formatting  off    default  modules/taste-formatting.md (builtin)
+  workflow          off    default  Y review / Y verify (core)
+  telemetry         off    default  tel.record (core)
+  benchmark         off    default  Y benchmark (core)
+  verbose           off    default  renderer level (core)
+
+docs   modules/concise-output.md
+```
+
+### Provider records
+
+A provider is four fields — `id`, `type`, `priority`, `invocable`:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `id` | — | Type-scoped identifier. For `skill`, the frontmatter `name` (not the directory). |
+| `type` | — | `skill` · `builtin` · `core`. New types are one entry in the registry's `DETECT` map. |
+| `priority` | `0` | Higher wins; declaration order breaks ties. `0` marks the terminal fallback. |
+| `invocable` | `true` | `false` means defer to it if the user activated it, but never invoke it. |
+
+**Adding a behavior** is one entry in `MODULES` plus one `modules/<name>.md`.
+**Adding an implementation** is one entry in that module's `providers` array.
+**Adding a provider kind** (`plugin`, `mcp`, `adapter`) is one detector in `DETECT`.
+None of the three touches core.
+
+### Configuration
+
+Resolution order, last wins: registry defaults → `.claude/yindee.json` → `YINDEE_MODULES` →
+CLI flags. `requires` is transitive, so enabling `benchmark` also enables `telemetry`.
+
+```jsonc
+{
+  "modules": {
+    "benchmark": true,                    // boolean shorthand
+    "workflow": {                         // or the long form
+      "enabled": true,
+      "providers": [
+        { "id": "our-house-review", "type": "skill", "priority": 50 }
+      ]
+    }
+  }
+}
+```
+
+```bash
+yindee modules enable benchmark        # persist to .claude/yindee.json (writes telemetry too)
+YINDEE_MODULES=benchmark,verbose ...   # one session; a leading - turns a module off
+yindee context "…" --module verbose    # one command
+yindee map --verbose                   # shorthand for the verbose module
+```
+
+Config is validated: a provider with no `id`, an unknown `type`, or a non-numeric `priority`
+is dropped and reported in `yindee modules`. It never throws and is never silently honoured.
+
+### Compatibility with other skills
+
+Yindee detects installed skills read-only, by frontmatter `name`, under the repo's
+`.claude/skills/`, the user config dir, and plugin skill directories. It never writes to
+`~/.claude` and never installs anything.
+
+| Skill | Module | How they compose |
+| --- | --- | --- |
+| [i-have-adhd](https://github.com/ayghri/i-have-adhd) | `concise-output` | It sets `disable-model-invocation: true`, so Yindee **defers** rather than invoking. If the user activated it, it wins outright and Yindee's builtin rules stand down. |
+| [taste-skill](https://github.com/leonxlnx/taste-skill) | `taste-formatting` | Fires only on frontend/UI work, and governs **design artefacts, not response length**. Its sibling `full-output-enforcement` bans brevity — that rule is about code completeness; do not let it leak into prose, or it will fight `concise-output`. |
+| [agent-skills](https://github.com/addyosmani/agent-skills) | `workflow` | Adds judgement (review, TDD, debugging, ADRs). It never replaces the deterministic core: `context` still selects files, `impact` still sets the tier, `verify` still runs the plan. |
+
+None is required. With none installed, every module resolves to its builtin or core provider
+and behavior is identical to Yindee's own defaults.
 
 ### Exploration control
 
@@ -294,10 +408,16 @@ Risk tiering decides step depth, so you don't:
 
 ## Benchmark & telemetry
 
+**Off by default.** Enable with `yindee modules enable benchmark` (which enables `telemetry`
+too), or `YINDEE_MODULES=benchmark` for one session. With it off nothing is recorded, no
+report is printed, and the agent is instructed to state no elapsed time and no token usage —
+because it has no way to measure them.
+
 An AI agent cannot read a clock and cannot see its own token usage — so it must not report either.
 Yindee measures instead.
 
 ```bash
+yindee modules enable benchmark               # once per repo
 yindee benchmark start --label "refresh token rotation"
 #   ... ordinary yindee commands record themselves ...
 yindee benchmark status                       # live counters
@@ -465,8 +585,12 @@ The full convention — one branch per intent, draft PR until local verification
 ## Generated files
 
 Everything Yindee generates lives in `.claude/yindee/` — the map cache, last verify results, and
-benchmark telemetry. It is `.gitignore`d here, and `install` also adds it to `.git/info/exclude` in
-target repos, so it never appears in a teammate's `git status`.
+(when the `telemetry` module is on) benchmark telemetry. It is `.gitignore`d here, and `install`
+also adds it to `.git/info/exclude` in target repos, so it never appears in a teammate's
+`git status`.
+
+`.claude/yindee.json` is different: it is your config, it is yours to commit, and `modules
+enable/disable` splices only the `modules` key — every other setting is preserved.
 
 ## Limitations
 

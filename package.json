@@ -39,6 +39,7 @@
     "rules",
     "references",
     "templates",
+    "modules",
     "SKILL.md",
     "README.md",
     "LICENSE"

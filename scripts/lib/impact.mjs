@@ -180,7 +180,7 @@ export function computeImpact(root, map, opts = {}) {
   };
 }
 
-export function renderImpact(impact, { verbose = false } = {}) {
+export function renderImpact(impact, { verbose = false, quiet = false } = {}) {
   const out = [];
   out.push(
     `tier   ${impact.tier.toUpperCase()}  (${impact.reasons.join('; ') || 'no reason recorded'})` +
@@ -198,7 +198,7 @@ export function renderImpact(impact, { verbose = false } = {}) {
   }
   if (impact.sensitive.length) out.push(`!!     sensitive: ${uniq(impact.sensitive).slice(0, 8).join(', ')}`);
 
-  const show = verbose ? impact.files : impact.files.slice(0, 25);
+  const show = verbose ? impact.files : impact.files.slice(0, quiet ? 10 : 25);
   if (show.length) {
     out.push('files');
     out.push(columns(show.map((f) => ['  ' + f.status, f.path, areasOf(f.path).slice(0, 2).join(',')])));

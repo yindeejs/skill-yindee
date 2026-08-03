@@ -18,12 +18,20 @@ import { have, shellStats } from './lib/sh.mjs';
 import * as tel from './lib/telemetry.mjs';
 import { readTokenUsage } from './lib/tokens.mjs';
 import { renderReport, compareRuns, renderCompare } from './lib/benchmark.mjs';
+import { resolveModules, renderModules, setModule, MODULES } from './lib/registry.mjs';
 
 const SKILL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { flags, positional } = parseArgs(process.argv.slice(2));
 const cmd = positional[0] || 'help';
 const ROOT = findRepoRoot(path.resolve(flags.repo ? String(flags.repo) : process.cwd()));
 const JSON_OUT = !!flags.json;
+
+// Which behaviors are on for this invocation. Resolved once: Core asks the
+// registry, it never hardcodes a module's presence.
+const mods = resolveModules(ROOT, flags);
+const on = (name) => mods.enabled.has(name);
+const VERBOSE = mods.level === 'verbose';
+const QUIET = !VERBOSE;
 
 // Telemetry measures what this process actually emitted, so the byte count is
 // the real thing rather than a guess at it.
@@ -47,14 +55,17 @@ const HELP = `yindee — token-efficient development harness
   verify                    run that plan; reports failures only
   review                    bounded diff + path-scoped checklist + failure evidence
   status                    branch, base, PR, CI, pending work
+  modules                   which behaviors are on, and who provides them
   install                   vendor the harness into a repo (.claude/skills/yindee)
   doctor                    environment + self-check
-  benchmark <sub>           measured telemetry: start|status|stop|report|compare|list|prune
+  benchmark <sub>           measured telemetry (module: benchmark)
 
 options
   --repo <dir>              repo to operate on (default: cwd, walked up to the root)
   --json                    machine-readable output
-  --verbose                 do not truncate lists
+  --verbose                 full output; do not truncate lists
+  --module x --no-module x  turn a module on/off for this invocation
+  modules  list|enable <m>|disable <m>
   init     --refresh
   map      --force
   context  --paths a,b --limit N --max-bytes N --batch N --reference <dir>[,<dir>]
@@ -106,8 +117,8 @@ function main() {
     case 'map': {
       const { map, cached } = getMap(!!flags.force);
       if (JSON_OUT) return say(JSON.stringify(map, null, 2));
-      say(renderMap(map, { verbose: !!flags.verbose }));
-      say(`cache  ${cached ? 'hit' : 'rebuilt'} -> ${toPosix(path.relative(ROOT, mapPath(ROOT)))}`);
+      say(renderMap(map, { verbose: VERBOSE, quiet: QUIET }));
+      if (VERBOSE) say(`cache  ${cached ? 'hit' : 'rebuilt'} -> ${toPosix(path.relative(ROOT, mapPath(ROOT)))}`);
       return;
     }
 
@@ -137,7 +148,13 @@ function main() {
       measured.references = ctx.references.length;
       measured.referencesUnavailable = ctx.references.filter((r) => !r.available).length;
       measured.referencePaths = ctx.references.filter((r) => r.available).map((r) => r.path);
-      return emit(ctx, renderContext(ctx, map, toPosix(path.relative(ROOT, SKILL_ROOT) || SKILL_ROOT), { quiet: !!flags.quiet }));
+      return emit(
+        ctx,
+        renderContext(ctx, map, toPosix(path.relative(ROOT, SKILL_ROOT) || SKILL_ROOT), {
+          quiet: QUIET || !!flags.quiet,
+          verbose: VERBOSE,
+        }),
+      );
     }
 
     case 'impact': {
@@ -151,7 +168,7 @@ function main() {
       });
       measured.files = impact.files.map((f) => f.path);
       measured.tier = impact.tier;
-      return emit(impact, renderImpact(impact, { verbose: !!flags.verbose }));
+      return emit(impact, renderImpact(impact, { verbose: VERBOSE, quiet: QUIET }));
     }
 
     case 'verify': {
@@ -175,7 +192,10 @@ function main() {
       if (only.length) steps = steps.filter((s) => only.some((o) => s.id.includes(o)));
 
       if (!steps.length) {
-        return emit({ ...impact, results: [] }, `${renderImpact(impact)}\n\nverify [${impact.tier}] nothing to run`);
+        return emit(
+          { ...impact, results: [] },
+          `${renderImpact(impact, { verbose: VERBOSE, quiet: QUIET })}\n\nverify [${impact.tier}] nothing to run`,
+        );
       }
       if (flags['dry-run']) {
         return emit({ tier: impact.tier, steps }, `verify [${impact.tier}] dry run:\n` + columns(steps.map((s) => ['  ' + s.id, s.cmd])));
@@ -275,20 +295,30 @@ function main() {
       }
       rows.push(['ci', map.ci.provider || '(none)', map.ci.files.length ? `${map.ci.files.length} file(s)` : '-']);
       rows.push(['gh cli', have('gh') ? 'installed' : 'missing', have('gh') ? 'ok' : 'optional']);
-      const bench = tel.statusOf(ROOT);
       rows.push([
-        'benchmark',
-        bench.active ? `running ${bench.session.id}` : bench.corrupt ? 'corrupt session state' : 'no session',
-        `${tel.listRuns(ROOT).length} stored run(s)`,
+        'modules on',
+        [...mods.enabled].join(' ') || '(none)',
+        `level ${mods.level}`,
       ]);
-      // Whether ACTUAL Claude token usage is reachable here — the answer decides
-      // between a measured number and an honest `unavailable`.
-      const usage = readTokenUsage({});
-      rows.push([
-        'claude tokens',
-        usage.status === 'ok' ? usage.source : 'unavailable',
-        usage.status === 'ok' ? `ok (${usage.requests} request(s) in transcript)` : usage.reason,
-      ]);
+      for (const r of mods.resolved.filter((x) => x.enabled && x.active.type === 'skill')) {
+        rows.push([`  ${r.module}`, `${r.active.id} (skill)`, r.active.invocable === false ? 'defer only' : 'ok']);
+      }
+      if (on('benchmark')) {
+        const bench = tel.statusOf(ROOT);
+        rows.push([
+          'benchmark',
+          bench.active ? `running ${bench.session.id}` : bench.corrupt ? 'corrupt session state' : 'no session',
+          `${tel.listRuns(ROOT).length} stored run(s)`,
+        ]);
+        // Whether ACTUAL Claude token usage is reachable here — the answer decides
+        // between a measured number and an honest `unavailable`.
+        const usage = readTokenUsage({});
+        rows.push([
+          'claude tokens',
+          usage.status === 'ok' ? usage.source : 'unavailable',
+          usage.status === 'ok' ? `ok (${usage.requests} request(s) in transcript)` : usage.reason,
+        ]);
+      }
       const missing = ['frontend', 'backend', 'database', 'security'].filter(
         (r) => !exists(path.join(SKILL_ROOT, 'rules', `${r}.md`)),
       );
@@ -296,7 +326,43 @@ function main() {
       return emit({ map, rows }, columns(rows));
     }
 
+    case 'modules': {
+      const sub = positional[1] || 'list';
+      if (sub === 'enable' || sub === 'disable') {
+        const name = positional[2];
+        if (!name) {
+          say(`usage: yindee modules ${sub} <${Object.keys(MODULES).join('|')}>`);
+          process.exitCode = 2;
+          return;
+        }
+        const res = setModule(ROOT, name, sub === 'enable');
+        // Re-resolve so the table reflects the write we just made.
+        const next = resolveModules(ROOT, flags);
+        return emit(
+          { ...res, ...next, source: Object.fromEntries(next.source) },
+          `modules ${name} ${sub}d in ${toPosix(path.relative(ROOT, res.file))}` +
+            (res.also.length ? ` (also enabled: ${res.also.join(', ')})` : '') +
+            '\n\n' +
+            renderModules(next, { verbose: VERBOSE }),
+        );
+      }
+      if (sub !== 'list') {
+        say(`usage: yindee modules [list|enable <m>|disable <m>]`);
+        process.exitCode = 2;
+        return;
+      }
+      return emit({ ...mods, enabled: [...mods.enabled], source: Object.fromEntries(mods.source) },
+        renderModules(mods, { verbose: VERBOSE }));
+    }
+
     case 'benchmark':
+      // The module gate, not a removal: every subcommand still exists behind it.
+      if (!on('benchmark')) {
+        return emit(
+          { module: 'benchmark', enabled: false },
+          'benchmark disabled — enable: yindee modules enable benchmark  (or YINDEE_MODULES=benchmark)',
+        );
+      }
       return benchmark(positional[1] || 'status');
 
     default:
@@ -409,8 +475,9 @@ try {
   process.exitCode = 1;
 } finally {
   // `benchmark` is the instrument, not the workload — measuring it would count
-  // reading the meter as work. Everything else contributes exactly one event.
-  if (cmd !== 'benchmark' && cmd !== 'help' && cmd !== '--help') {
+  // reading the meter as work. Everything else contributes exactly one event,
+  // and only when the telemetry module is on.
+  if (on('telemetry') && cmd !== 'benchmark' && cmd !== 'modules' && cmd !== 'help' && cmd !== '--help') {
     tel.record(ROOT, {
       cmd,
       ms: invocation.ms(),

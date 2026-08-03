@@ -22,10 +22,10 @@ function routerBlock(skillRel) {
     '| after editing | `impact` — changed files, risk tier, verification plan |',
     '| verify | `verify` — runs that plan, reports failures only |',
     '| before commit/PR | `review` — bounded diff + path-scoped checklist |',
-    '| reporting a task | `benchmark start` / `benchmark stop` — measured duration and cost |',
+    '| which behaviors are on | `modules` — and who provides each one |',
     '',
-    'Never state elapsed time or token usage that did not come from `benchmark`. When it reports token',
-    'usage as `unavailable`, say "Token usage unavailable from runtime telemetry" — do not estimate it.',
+    'Measurement is an opt-in module and is off by default. Unless `modules` reports `benchmark` as',
+    'on, state no elapsed time, no token usage and no cost — you have no way to measure them.',
     '',
     'If a script can answer it, do not explore it. Task breadth does not justify repository breadth.',
     '`context` prints an `explore` level — obey it. Broad, repo-wide agents are not permitted without',
@@ -33,7 +33,8 @@ function routerBlock(skillRel) {
     'work one phase per pass instead of widening the search.',
     '',
     `Path-scoped rules load on demand from \`${skillRel}/rules/\` (frontend, backend, database, security) —`,
-    'read only the ones `context`/`impact` name.',
+    'read only the ones `context`/`impact` name. Module docs load the same way from',
+    `\`${skillRel}/modules/\` — read only the ones \`modules\` reports as on.`,
     END,
   ].join('\n');
 }
@@ -57,7 +58,7 @@ export function install(skillRoot, target, opts = {}) {
     fs.mkdirSync(dest, { recursive: true });
     // `references` and `templates` are linked from SKILL.md — a vendored copy
     // without them has dead links.
-    for (const dir of ['scripts', 'rules', 'references', 'templates']) {
+    for (const dir of ['scripts', 'rules', 'references', 'templates', 'modules']) {
       if (exists(path.join(skillRoot, dir))) copyDir(path.join(skillRoot, dir), path.join(dest, dir));
     }
     for (const file of ['SKILL.md', 'README.md']) {
