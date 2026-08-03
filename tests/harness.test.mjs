@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { parseToml } from '../scripts/lib/toml.mjs';
 import { globToRegex, matchGlob, tokenize, errorExcerpt, columns } from '../scripts/lib/util.mjs';
@@ -230,6 +231,58 @@ describe('areas', () => {
     assert.ok(isGenerated('.claude/yindee/map.json'));
     assert.ok(isGenerated('.claude/skills/yindee/scripts/yindee.mjs'));
     assert.ok(!isGenerated('.claude/settings.json'), "a project's own claude config is not ours to hide");
+  });
+});
+
+// ----------------------------------------------------------------- install ---
+
+const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'yindee.mjs');
+const SKILL_ROOT = path.dirname(path.dirname(CLI));
+
+describe('install', () => {
+  test('a path flag that arrived without a value is refused', () => {
+    // Regression: `--target` with no value parsed to boolean true, and
+    // String(true) resolved to a directory literally named "true" — which
+    // install then created, inside the repo the user meant to install into.
+    const root = path.join(TMP, 'flagless');
+    fs.mkdirSync(root, { recursive: true });
+    for (const flag of ['--target', '--repo']) {
+      const r = spawnSync(process.execPath, [CLI, 'install', flag], { cwd: root, encoding: 'utf8' });
+      assert.equal(r.status, 2, `${flag} must exit 2`);
+      assert.match(r.stdout + r.stderr, /needs a directory/);
+    }
+    assert.ok(!fs.existsSync(path.join(root, 'true')), 'nothing may be named after the boolean');
+  });
+
+  test('installing into the skill source itself does nothing', () => {
+    // The vendored copy installing back into its own repo was already caught.
+    // The source checkout installing into itself was not: `dest` never equals
+    // `skillRoot` there, so it rewrote the source repo's own CLAUDE.md to point
+    // at a vendored path that repo does not use.
+    const res = installLib.install(SKILL_ROOT, SKILL_ROOT, { dryRun: true });
+    assert.match(res.actions.join(' '), /skill source itself/);
+  });
+
+  test('a real target still gets the harness and a router block', () => {
+    const root = path.join(TMP, 'installee');
+    fs.mkdirSync(root, { recursive: true });
+    const res = installLib.install(SKILL_ROOT, root);
+    assert.ok(fs.existsSync(path.join(root, '.claude/skills/yindee/scripts/yindee.mjs')));
+    assert.ok(fs.existsSync(path.join(root, '.claude/skills/yindee/modules')), 'modules/ ships with the vendored copy');
+    const claude = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8');
+    assert.match(claude, /<!-- yindee:start -->/);
+    assert.match(claude, /<!-- yindee:end -->/);
+    assert.ok(res.actions.some((a) => a.includes('CLAUDE.md')));
+  });
+
+  test('an existing CLAUDE.md keeps everything outside the markers', () => {
+    const root = path.join(TMP, 'installee-existing');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, 'CLAUDE.md'), '# app\n\nHouse rules that are ours, not yours.\n');
+    installLib.install(SKILL_ROOT, root);
+    const claude = fs.readFileSync(path.join(root, 'CLAUDE.md'), 'utf8');
+    assert.match(claude, /House rules that are ours, not yours\./);
+    assert.match(claude, /<!-- yindee:start -->/);
   });
 });
 
