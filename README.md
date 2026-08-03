@@ -311,10 +311,21 @@ A missing reference degrades to a note; the main repo's context is unaffected.
 
 **Requirements:** Node.js ≥ 18. No dependencies, no build step, no network calls.
 
+### From npm
+
+Nothing to clone. `install` vendors the harness into whichever repo you point it at:
+
+```bash
+npx yindee-skill install --target .     # inside the repo you want it in
+npm i -g yindee-skill                   # or keep `yindee` on your PATH
+```
+
+### From source
+
 ```bash
 gh repo clone yindeejs/skill-yindee
 cd skill-yindee
-npm test        # optional: 103 tests, node --test
+npm test        # optional: 240 tests, node --test
 ```
 
 ### Use it as a Claude Code skill
@@ -324,7 +335,7 @@ Copy the harness into a skills directory so `/yindee` is available:
 ```bash
 # Personal — available in every project
 mkdir -p ~/.claude/skills/yindee
-cp -r SKILL.md README.md scripts rules references templates ~/.claude/skills/yindee/
+cp -r SKILL.md README.md scripts rules references templates modules ~/.claude/skills/yindee/
 
 # Or per project, from inside the repo you want it in
 node /path/to/skill-yindee/scripts/yindee.mjs install --target .
