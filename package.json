@@ -1,9 +1,8 @@
 {
-  "name": "yindee",
+  "name": "yindee-skill",
   "version": "1.0.0",
   "description": "Token-efficient development harness for AI coding agents. Less context, better context.",
   "type": "module",
-  "private": true,
   "license": "MIT",
   "homepage": "https://github.com/yindeejs/skill-yindee#readme",
   "repository": {
