@@ -47,6 +47,79 @@ export function writeJson(p, value) {
   fs.writeFileSync(p, JSON.stringify(value, null, 2) + '\n');
 }
 
+/**
+ * Same, but a concurrent reader can never see a half-written file: the content
+ * lands in a per-process temp file and is then renamed onto the target. Rename
+ * is an atomic replace on POSIX and on Windows (MoveFileEx), so a reader gets
+ * either the old bytes or the new ones.
+ */
+export function writeJsonAtomic(p, value) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = `${p}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n');
+    fs.renameSync(tmp, p);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* already gone */
+    }
+    throw err;
+  }
+}
+
+export const STALE_LOCK_MS = 60_000;
+
+/**
+ * Advisory lock around a rebuild. `wx` is O_EXCL, so acquiring is atomic on
+ * every platform Node supports.
+ *
+ * Never blocks: a caller that loses the race gets `{ ran: false }` and is
+ * expected to fall back to whatever it did before the cache existed. That is
+ * what keeps N concurrent sessions correct without a queue — the loser does the
+ * work itself rather than waiting for the winner.
+ *
+ * A lock older than STALE_LOCK_MS is treated as abandoned, so a killed process
+ * cannot wedge a repository. Two builders racing after a stale break is
+ * harmless: both write atomically and produce the same bytes for the same input.
+ */
+export function withLock(lockFile, fn, { staleMs = STALE_LOCK_MS } = {}) {
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  let fd = null;
+  try {
+    fd = fs.openSync(lockFile, 'wx');
+  } catch {
+    const st = statSafe(lockFile);
+    if (!st || Date.now() - st.mtimeMs < staleMs) return { ran: false, reason: 'locked' };
+    try {
+      fs.unlinkSync(lockFile);
+      fd = fs.openSync(lockFile, 'wx');
+    } catch {
+      return { ran: false, reason: 'locked' };
+    }
+  }
+  try {
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    fs.closeSync(fd);
+    fd = null;
+    return { ran: true, value: fn() };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      fs.unlinkSync(lockFile);
+    } catch {
+      /* someone broke it as stale */
+    }
+  }
+}
+
 export function listDir(dir) {
   try {
     return fs.readdirSync(dir, { withFileTypes: true });

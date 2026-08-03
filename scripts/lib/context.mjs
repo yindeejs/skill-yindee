@@ -14,6 +14,7 @@ import { scoreAreas, scorePackages, fileCandidates } from './candidates.mjs';
 import { applyBudget, budgetFor, fmtBudget } from './budget.mjs';
 import { assessExploration, renderExploration } from './explore.mjs';
 import { queryReferences, renderReferences } from './reference.mjs';
+import { match as matchWiki, renderWhy } from './wiki.mjs';
 
 /** Per-package agent instructions Claude Code will not have auto-loaded. */
 function localInstructions(root, pkgs) {
@@ -44,14 +45,25 @@ export function computeContext(root, map, task, opts = {}) {
 
   if (!areas.length) areas = uniq(pkgs.flatMap((p) => p.pkg.areas || []));
 
+  // Repository Intelligence, when the module is on and a usable index exists.
+  // `index: null` is the ordinary case, not an error: the ranker then walks the
+  // filesystem exactly as it always has.
+  const intel = opts.intel ?? null;
+  const index = intel?.ok ? intel.files : null;
+
+  // Knowledge Wiki: a separate, capped pointer list. It is computed from its
+  // own source and joined to the result at the end — it never touches the
+  // candidate ranker, the budget, or the risk tier.
+  const why = opts.wiki?.ok ? matchWiki(opts.wiki.docs, tokens) : [];
+
   // `--limit` predates the budget and still means "at most this many files".
   const limits = budgetFor(map.config || {}, { maxFiles: opts.limit, maxBytes: opts.maxBytes });
-  let candidates = fileCandidates(root, map, pkgs, tokens, areas, limits.maxCandidates);
+  let candidates = fileCandidates(root, map, pkgs, tokens, areas, limits.maxCandidates, { index });
   // A thin answer inside a known scope is what sends a session exploring. When
   // the scope was chosen deliberately, or keywords found almost nothing in one,
   // offer the scope's own source and let the budget do the cutting.
   if (pkgs.length && (explicitPaths.length > 0 || candidates.length < 3)) {
-    candidates = fileCandidates(root, map, pkgs, tokens, areas, limits.maxCandidates, { fill: true });
+    candidates = fileCandidates(root, map, pkgs, tokens, areas, limits.maxCandidates, { fill: true, index });
   }
   const budget = applyBudget(root, candidates, limits, { batch: opts.batch });
 
@@ -66,6 +78,11 @@ export function computeContext(root, map, task, opts = {}) {
     budget,
     rules: rulesFor(areas),
     localInstructions: localInstructions(root, pkgs),
+    // A sibling of `files`, never merged into it. Filtered against the selected
+    // files rather than the other way round: the ranker has always been able to
+    // surface a markdown file on its own merits, and suppressing that would
+    // change file selection. Dropping the duplicate pointer does not.
+    why: why.filter((d) => !budget.selected.some((f) => f.file === d.path)),
   };
 
   // Explicit path scoping is itself a decomposition step, so a phased task does
@@ -116,6 +133,10 @@ export function renderContext(ctx, map, skillRoot, opts = {}) {
   if (!ctx.budget.withinBudget && ctx.budget.deferred.length) {
     out.push(`       next batch: yindee context "${ctx.task}" --batch ${Math.min(ctx.budget.batch + 1, ctx.budget.batches)}`);
   }
+
+  // Human-authored intent, kept visually and structurally apart from `files`:
+  // these are never candidates, never budgeted, and never authoritative.
+  if (ctx.why?.length) out.push(renderWhy(ctx.why));
 
   if (ctx.references?.length) out.push(renderReferences(ctx.references));
   if (ctx.exploration) out.push(renderExploration(ctx.exploration));

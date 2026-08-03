@@ -2,6 +2,7 @@
 // concrete verification plan. Pure computation over the map and git; no LLM.
 import { changedFiles } from './gitx.mjs';
 import { areasOf, isSensitive, isGenerated, isLockfile, rulesFor, NON_CODE_AREAS } from './areas.mjs';
+import { fileDependents } from './intel.mjs';
 import { columns, uniq } from './util.mjs';
 
 export const TIERS = ['docs', 'standard', 'broad', 'critical'];
@@ -174,6 +175,9 @@ export function computeImpact(root, map, opts = {}) {
     tier,
     reasons,
     packages: { direct, affected: affectedNames },
+    // Additive only. It informs what to look at; it never feeds the tier or the
+    // verify plan, both of which are decided above from paths and packages.
+    fileDependents: opts.intel?.ok ? fileDependents(opts.intel.files, files.map((f) => f.path)) : [],
     rules: rulesFor(cls.areas),
     steps,
     reviewDepth: tier === 'critical' ? 'deep' : tier === 'broad' ? 'standard' : 'light',
@@ -197,6 +201,16 @@ export function renderImpact(impact, { verbose = false, quiet = false } = {}) {
     out.push(`pkgs   ${impact.packages.direct.join(', ')}` + (extra.length ? `  +dependents: ${extra.join(', ')}` : ''));
   }
   if (impact.sensitive.length) out.push(`!!     sensitive: ${uniq(impact.sensitive).slice(0, 8).join(', ')}`);
+  if (impact.fileDependents?.length) {
+    const show = verbose ? impact.fileDependents : impact.fileDependents.slice(0, quiet ? 6 : 12);
+    out.push(
+      `imports ${impact.fileDependents.length} file(s) may import what changed (name match, not resolution):`,
+    );
+    out.push(columns(show.map((f) => ['  ' + f])));
+    if (impact.fileDependents.length > show.length) {
+      out.push(`  … ${impact.fileDependents.length - show.length} more (--verbose)`);
+    }
+  }
 
   const show = verbose ? impact.files : impact.files.slice(0, quiet ? 10 : 25);
   if (show.length) {

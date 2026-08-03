@@ -2,6 +2,7 @@
 // on) and `reference` (a repo being compared against), so a reference lookup is
 // scored by exactly the same deterministic rules as a local one.
 import { collectFiles } from './fsx.mjs';
+import { list as intelList } from './intel.mjs';
 import { lines } from './sh.mjs';
 import { uniq, matchAny } from './util.mjs';
 import { DEFAULT_AREAS, NON_CODE_AREAS, primaryArea, isGenerated } from './areas.mjs';
@@ -82,8 +83,14 @@ const isSource = (rel) => !isGenerated(rel) && !NON_CODE_AREAS.has(primaryArea(r
  * returns one entry point is a lookup a model will go exploring around. With a
  * scope already established, the budget should decide how much comes back, not
  * the keyword threshold.
+ *
+ * `index` is the Repository Intelligence file index, when one is available. It
+ * replaces the *source of the file list* and nothing else: every weight, the
+ * `score >= 4` threshold and the sort below are identical either way. The walk
+ * it displaces was capped at depth 6 and 3000 entries, so on a large repo the
+ * index does not just avoid work — it sees files the walk could not reach.
  */
-export function fileCandidates(root, map, pkgs, tokens, areas, cap = 200, { fill = false } = {}) {
+export function fileCandidates(root, map, pkgs, tokens, areas, cap = 200, { fill = false, index = null } = {}) {
   const scopePaths = pkgs.length ? pkgs.map((p) => p.pkg.path).filter((p) => p !== '.') : [];
   const scored = new Map();
 
@@ -97,7 +104,8 @@ export function fileCandidates(root, map, pkgs, tokens, areas, cap = 200, { fill
   // 1. Filename / path token match inside scoped source trees.
   const roots = scopePaths.length ? scopePaths : [''];
   for (const r of roots) {
-    for (const f of collectFiles(root, r, { maxDepth: 6, limit: 3000 })) {
+    const files = index ? intelList(index, r) : collectFiles(root, r, { maxDepth: 6, limit: 3000 });
+    for (const f of files) {
       if (/\.(png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip|lock|snap)$/i.test(f)) continue;
       const fileSegs = segs(f.split('/').slice(-2).join('/'));
       let n = 0;
@@ -110,6 +118,12 @@ export function fileCandidates(root, map, pkgs, tokens, areas, cap = 200, { fill
   }
 
   // 2. Content grep, only when the repo is a git repo (fast + index-aware).
+  //
+  // The index stores declared symbols, and it is tempting to score them here.
+  // Deliberately not done: that would make candidate output differ with and
+  // without the index, and "the index never changes the scoring" is exactly
+  // what makes it safe to have on by default. Symbols and imports are consumed
+  // by `impact`, which opts into them explicitly.
   if (map.git?.isRepo) {
     for (const [f, n] of grepCandidates(root, tokens, scopePaths)) bump(f, n, 'content');
   }
